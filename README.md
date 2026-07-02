@@ -1,8 +1,8 @@
 # 🧠 StudyMind — Personal Study Assistant
 
-**StudyMind** is a personal study assistant that uses [Cognee](https://github.com/topoteretes/cognee) (an open-source AI memory platform) to build a knowledge graph from your study material and let you query it intelligently.
+**StudyMind** is a personal study assistant powered by [Cognee Cloud](https://app.cognee.ai) — an AI memory platform that builds a knowledge graph from your study material and lets you query it intelligently.
 
-> **100% Local** — No cloud APIs, no Docker. Runs entirely on your machine with Ollama.
+> ☁️ **Cloud-powered** — No local LLM, no Docker, no heavy hardware required. Ingestion and reasoning run on Cognee Cloud; only text extraction happens locally.
 
 ---
 
@@ -13,8 +13,8 @@
 | **📥 Multi-Source Ingestion** | Ingest PDFs, YouTube transcripts, web articles, and typed notes |
 | **💬 Q&A Across Sources** | Ask questions and get answers synthesized from ALL your material |
 | **🔗 Connect Topics** | ⭐ Hero feature — discover how two topics relate through your knowledge graph |
-| **📋 Topic Summaries** | Get cross-source summaries with attribution (which PDF, article, or note said what) |
-| **📚 Knowledge Base** | Track ingested sources, forget individual items or everything |
+| **📋 Topic Summaries** | Get cross-source summaries powered by Cognee Cloud's graph reasoning |
+| **📚 Knowledge Base** | Track ingested sources and manage your session |
 
 ---
 
@@ -30,29 +30,23 @@
 │       │               │                   │               │
 ├───────┼───────────────┼───────────────────┼───────────────┤
 │       ▼               ▼                   ▼               │
-│  ┌─────────┐   ┌───────────┐      ┌─────────────┐       │
-│  │ingest.py│   │ query.py  │      │graph_utils.py│       │
-│  └────┬────┘   └─────┬─────┘      └──────┬──────┘       │
+│  ┌─────────┐   ┌───────────┐      ┌─────────────┐        │
+│  │ingest.py│   │ query.py  │      │graph_utils.py│        │
+│  └────┬────┘   └─────┬─────┘      └──────┬──────┘        │
 │       │              │                    │               │
+│  Local text          │                    │               │
+│  extraction          │                    │               │
+│  (PyMuPDF,           │                    │               │
+│  trafilatura,        │                    │               │
+│  yt-transcript)      │                    │               │
 ├───────┼──────────────┼────────────────────┼───────────────┤
 │       ▼              ▼                    ▼               │
-│  ┌──────────────────────────────────────────────┐        │
-│  │              Cognee (Knowledge Graph)         │        │
-│  │  cognee.add() → cognee.cognify() → search()  │        │
-│  └───────────────────┬──────────────────────────┘        │
-│                      │                                    │
-├──────────────────────┼────────────────────────────────────┤
-│       ┌──────────────┼──────────────┐                     │
-│       ▼              ▼              ▼                     │
-│  ┌─────────┐   ┌──────────┐  ┌──────────┐               │
-│  │ SQLite  │   │ LanceDB  │  │  KuzuDB  │               │
-│  │ (data)  │   │ (vectors)│  │ (graph)  │               │
-│  └─────────┘   └──────────┘  └──────────┘               │
-│                                                           │
-│       ┌──────────────────────────────┐                    │
-│       │    Ollama (localhost:11434)   │                    │
-│       │  qwen3:8b  │ nomic-embed-text│                    │
-│       └──────────────────────────────┘                    │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │              Cognee Cloud REST API                   │  │
+│  │  POST /api/v1/remember  ←  ingest text as file      │  │
+│  │  POST /api/v1/recall    ←  GRAPH_COMPLETION / CHUNKS │  │
+│  │  GET  /api/v1/datasets/ ←  health check             │  │
+│  └─────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -62,20 +56,22 @@
 
 ```
 studymind/
-├── .env                   # Ollama/Cognee config (LLM, embedding, DB providers)
+├── .env.example           # Template — copy to .env and add your credentials
+├── .env                   # Your Cognee Cloud credentials (git-ignored, never committed)
+├── .gitignore
 ├── requirements.txt       # Python dependencies
 ├── README.md              # This file
 ├── app.py                 # Streamlit UI — single-page app with 3 tabs
 ├── core/
 │   ├── __init__.py
-│   ├── config.py          # Loads .env, validates Ollama connectivity
-│   ├── ingest.py          # Async functions: ingest_pdf/youtube/url/text
-│   ├── query.py           # Async functions: ask, connect_topics, summarize_topic
-│   └── graph_utils.py     # Parse search results, build graphs, render pyvis HTML
-├── data/                  # Uploaded/sample files
+│   ├── config.py          # Loads .env, pings Cognee Cloud health endpoint
+│   ├── ingest.py          # Extracts text locally, uploads to Cognee Cloud
+│   ├── query.py           # Calls /api/v1/recall for Q&A, topics, summaries
+│   └── graph_utils.py     # Parse recall results, build graphs, render pyvis HTML
+├── data/                  # Uploaded files (git-ignored except .gitkeep)
 └── tests/
     ├── __init__.py
-    └── test_ingest.py     # Smoke tests for ingestion + graph utilities
+    └── test_ingest.py     # Unit + integration smoke tests
 ```
 
 ---
@@ -85,27 +81,32 @@ studymind/
 ### Prerequisites
 
 - **Python 3.11+**
-- **Ollama** installed and running ([install guide](https://ollama.ai/download))
-- **16GB RAM** (GPU not required — runs on CPU)
+- A **Cognee Cloud** account with an API key — sign up at [app.cognee.ai](https://app.cognee.ai)
 
-### Step 1: Install Ollama & Pull Models
-
-```bash
-# Install Ollama (see https://ollama.ai/download for your OS)
-# Then pull the required models:
-ollama pull qwen3:8b
-ollama pull nomic-embed-text
-
-# Start Ollama (if not already running):
-ollama serve
-```
-
-### Step 2: Clone & Install Dependencies
+### Step 1: Clone & Install Dependencies
 
 ```bash
-cd studymind
+git clone https://github.com/tanay-koli/StudyMind.git
+cd StudyMind
 pip install -r requirements.txt
 ```
+
+### Step 2: Configure Cognee Cloud Credentials
+
+Copy the example env file and fill in your credentials:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+COGNEE_BASE_URL=https://tenant-YOUR_TENANT_ID.aws.cognee.ai
+COGNEE_API_KEY=your_api_key_here
+```
+
+> 💡 Get your `COGNEE_BASE_URL` and `COGNEE_API_KEY` from the [Cognee Cloud console](https://app.cognee.ai) under **Integrations → API / MCP → Step 1**.
 
 ### Step 3: Run StudyMind
 
@@ -113,18 +114,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`.
+The app opens at `http://localhost:8501`. The sidebar will show **🟢 Connected** if your credentials are valid.
 
 ---
 
 ## 🧪 Running Tests
 
 ```bash
-# Make sure Ollama is running first
 pytest tests/ -v
 ```
 
-Tests that require Ollama will be skipped automatically if it's not available.
+Pure unit tests (dataset naming, graph utilities) run without any credentials. Integration tests that call Cognee Cloud will be skipped automatically if `COGNEE_API_KEY` is not set.
 
 ---
 
@@ -134,34 +134,34 @@ Tests that require Ollama will be skipped automatically if it's not available.
 
 Go to the **📥 Ingest** tab and add your study material:
 
-- **PDF**: Upload a PDF file
-- **YouTube**: Paste a YouTube URL (transcript will be extracted)
-- **Web Article**: Paste an article URL (text will be extracted)
-- **Notes**: Type or paste your own notes
+- **PDF** — Upload a PDF file (text is extracted locally, then uploaded to the cloud)
+- **YouTube** — Paste a YouTube URL (transcript is fetched locally, then uploaded)
+- **Web Article** — Paste an article URL (text is scraped locally, then uploaded)
+- **Notes** — Type or paste your own notes
 
-> ⏱️ **Note**: Knowledge graph building takes 1-3 minutes per source on CPU. This is normal for local inference.
+> ⚡ Ingestion is fast — text is uploaded to Cognee Cloud in seconds. Knowledge graph building happens server-side.
 
 ### 2. Ask Questions
 
 Go to the **💬 Ask** tab and type any question. StudyMind will:
-- Search the knowledge graph for relevant information
-- Synthesize an answer from all your sources
+- Query the Cognee Cloud knowledge graph (`GRAPH_COMPLETION`)
+- Return an answer synthesized from all your sources
 - Show which sources contributed to the answer
 
 ### 3. Connect Topics (⭐ Hero Feature)
 
 Go to the **🔗 Connect Topics** tab:
-1. Enter two topic names (e.g., "transformers" and "attention mechanism")
-2. Click "Find Connection"
-3. See an **interactive graph** showing how the topics relate through your material
+1. Enter two topic names (e.g., `"transformers"` and `"attention mechanism"`)
+2. Click **Find Connection**
+3. See an **interactive graph** showing how the topics relate through your knowledge graph
 4. Read the **connection summary** below the graph
 
 ### 4. Manage Sources
 
-The **sidebar** shows all ingested sources. You can:
+The **sidebar** shows all ingested sources for this session. You can:
 - See the source type, title, and timestamp
-- Click 🗑️ to forget individual sources
-- Click "Forget Everything" to clear all data
+- Click 🗑️ to remove a source from the session view
+- Click **Forget Everything** to clear the session
 
 ---
 
@@ -169,14 +169,11 @@ The **sidebar** shows all ingested sources. You can:
 
 Edit `.env` to customize:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_MODEL` | `ollama/qwen3:8b` | LLM model for reasoning |
-| `EMBEDDING_MODEL` | `ollama/nomic-embed-text` | Embedding model |
-| `LLM_ENDPOINT` | `http://localhost:11434` | Ollama server URL |
-| `DB_PROVIDER` | `sqlite` | Relational database |
-| `VECTOR_DB_PROVIDER` | `lancedb` | Vector store |
-| `GRAPH_DATABASE_PROVIDER` | `kuzu` | Graph database |
+| Variable | Description |
+|----------|-------------|
+| `COGNEE_BASE_URL` | Your Cognee Cloud tenant URL (from the console) |
+| `COGNEE_API_KEY` | Your Cognee Cloud API key (from the console) |
+| `LOG_LEVEL` | Logging verbosity (`INFO`, `DEBUG`, `WARNING`) |
 
 ---
 
@@ -184,11 +181,26 @@ Edit `.env` to customize:
 
 | Issue | Solution |
 |-------|----------|
-| "Cannot connect to Ollama" | Run `ollama serve` in a separate terminal |
-| "Missing models" | Run `ollama pull qwen3:8b && ollama pull nomic-embed-text` |
-| Slow ingestion (>5 min) | Normal for CPU inference. Try shorter texts first |
-| "Malformed JSON" error | Local LLMs sometimes produce invalid JSON. Try re-ingesting |
-| Import errors | Make sure you're in the `studymind/` directory when running |
+| Sidebar shows 🔴 Disconnected | Check `COGNEE_BASE_URL` and `COGNEE_API_KEY` in `.env` |
+| `401 Unauthorized` error | API key is wrong or expired — regenerate it in the Cognee Cloud console |
+| `Cannot reach Cognee Cloud` | Check your internet connection |
+| Import errors | Make sure you're running from the `studymind/` directory |
+| PDF has no extractable text | The PDF may be image-only (scanned). Try a text-based PDF |
+| YouTube transcript unavailable | The video may have disabled transcripts or be in an unsupported language |
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| UI | [Streamlit](https://streamlit.io) |
+| Knowledge Graph | [Cognee Cloud](https://app.cognee.ai) REST API |
+| PDF extraction | [PyMuPDF](https://pymupdf.readthedocs.io/) |
+| Web scraping | [trafilatura](https://trafilatura.readthedocs.io/) |
+| YouTube transcripts | [youtube-transcript-api](https://pypi.org/project/youtube-transcript-api/) |
+| Graph visualization | [pyvis](https://pyvis.readthedocs.io/) + [networkx](https://networkx.org/) |
+| HTTP client | [httpx](https://www.python-httpx.org/) |
 
 ---
 
