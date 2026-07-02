@@ -2,7 +2,7 @@
 
 **StudyMind** is a personal study assistant powered by [Cognee Cloud](https://app.cognee.ai) — an AI memory platform that builds a knowledge graph from your study material and lets you query it intelligently.
 
-> ☁️ **Cloud-powered** — No local LLM, no Docker, no heavy hardware required. Ingestion and reasoning run on Cognee Cloud; only text extraction happens locally.
+> ☁️ **Cloud-powered with NotebookLM Features** — No local LLM or heavy hardware required. Organizes your study materials into Notebooks (Topics), autogenerates Study Guides, synthesizes Audio Overview podcasts, and discovers cross-topic connections.
 
 ---
 
@@ -10,11 +10,14 @@
 
 | Feature | Description |
 |---------|-------------|
-| **📥 Multi-Source Ingestion** | Ingest PDFs, YouTube transcripts, web articles, and typed notes |
-| **💬 Q&A Across Sources** | Ask questions and get answers synthesized from ALL your material |
-| **🔗 Connect Topics** | ⭐ Hero feature — discover how two topics relate through your knowledge graph |
-| **📋 Topic Summaries** | Get cross-source summaries powered by Cognee Cloud's graph reasoning |
-| **📚 Knowledge Base** | Track ingested sources and manage your session |
+| **📚 Topics (Notebooks)** | Group your ingested resources into collections (e.g. "ML Course", "DSA Prep") with custom color tags. |
+| **📥 Multi-Source Ingest** | Upload PDFs, YouTube transcripts, web articles, or paste your own notes. |
+| **💡 AI Topic Suggestions** | Automatically analyzes ingested text excerpts and suggests which topic folder the content belongs to via toast/banner confirmation. |
+| **💬 Scoped Q&A** | Query the knowledge graph scoped strictly to a single topic, or query all. |
+| **🔍 Cross-Topic Connections** | Ask a question primarily using one topic, but search for and synthesize connection paths from other topics in parallel. |
+| **📖 Auto Study Guides** | Generates detailed key concepts, review details, and practice questions for a topic. Exportable to Markdown (`.md`). |
+| **🎙️ Audio Overviews** | Generates a podcast overview script and synthesizes local speech (`.wav`) via `pyttsx3` so you can listen to summary audio. |
+| **🔗 Topic Map Visualization** | Hero feature — discover how topics and concepts relate through interactive 2D node graphs. |
 
 ---
 
@@ -36,9 +39,6 @@
 │       │              │                    │               │
 │  Local text          │                    │               │
 │  extraction          │                    │               │
-│  (PyMuPDF,           │                    │               │
-│  trafilatura,        │                    │               │
-│  yt-transcript)      │                    │               │
 ├───────┼──────────────┼────────────────────┼───────────────┤
 │       ▼              ▼                    ▼               │
 │  ┌─────────────────────────────────────────────────────┐  │
@@ -61,17 +61,21 @@ studymind/
 ├── .gitignore
 ├── requirements.txt       # Python dependencies
 ├── README.md              # This file
-├── app.py                 # Streamlit UI — single-page app with 3 tabs
+├── app.py                 # Streamlit UI — single-page app with restructured Notebook sidebar
 ├── core/
 │   ├── __init__.py
 │   ├── config.py          # Loads .env, pings Cognee Cloud health endpoint
-│   ├── ingest.py          # Extracts text locally, uploads to Cognee Cloud
-│   ├── query.py           # Calls /api/v1/recall for Q&A, topics, summaries
+│   ├── topics.py          # CRUD, suggestion, study guide + speech audio overview synthesis
+│   ├── ingest.py          # Extracts text locally, uploads scoped to topic datasets
+│   ├── query.py           # Scoped recall, cross-topic query synthesis, global Q&A
 │   └── graph_utils.py     # Parse recall results, build graphs, render pyvis HTML
-├── data/                  # Uploaded files (git-ignored except .gitkeep)
+├── data/
+│   ├── topics.json        # Topic data store, color tags, and cached guides/scripts
+│   ├── audio/             # Generated Audio Overview podcast WAV files
+│   └── .gitkeep
 └── tests/
     ├── __init__.py
-    └── test_ingest.py     # Unit + integration smoke tests
+    └── test_ingest.py     # Health checks and utility smoke tests
 ```
 
 ---
@@ -130,63 +134,27 @@ Pure unit tests (dataset naming, graph utilities) run without any credentials. I
 
 ## 📖 Usage Guide
 
-### 1. Ingest Material
+### 1. Create a Topic (Notebook)
+In the sidebar, expand **➕ New Topic**, enter a name (e.g. `"Transformers Course"`), and click **Create Topic**. It is assigned a color bullet and added to [data/topics.json](file:///d:/WeMakeDevs/studymind/data/topics.json).
 
-Go to the **📥 Ingest** tab and add your study material:
+### 2. Ingest Material
+Go to the **📥 Ingest** tab, select your topic dropdown, and add content:
+- **PDF** — Upload a file.
+- **YouTube** — Paste a video link (transcript is fetched).
+- **Web Article** — Paste a link.
+- **Notes** — Paste raw typed notes.
 
-- **PDF** — Upload a PDF file (text is extracted locally, then uploaded to the cloud)
-- **YouTube** — Paste a YouTube URL (transcript is fetched locally, then uploaded)
-- **Web Article** — Paste an article URL (text is scraped locally, then uploaded)
-- **Notes** — Type or paste your own notes
+After ingestion, Cognee analyzes the content, fires a toast, and shows a top banner asking if you'd like to move it to a suggested AI-derived topic.
 
-> ⚡ Ingestion is fast — text is uploaded to Cognee Cloud in seconds. Knowledge graph building happens server-side.
+### 3. Ask Questions
+In the **💬 Ask** tab:
+- Choose your scope: **All Topics** or select a specific topic notebook.
+- Toggle **🔍 Find connections across topics** to perform a comparative vector search and display segmented answers.
 
-### 2. Ask Questions
-
-Go to the **💬 Ask** tab and type any question. StudyMind will:
-- Query the Cognee Cloud knowledge graph (`GRAPH_COMPLETION`)
-- Return an answer synthesized from all your sources
-- Show which sources contributed to the answer
-
-### 3. Connect Topics (⭐ Hero Feature)
-
-Go to the **🔗 Connect Topics** tab:
-1. Enter two topic names (e.g., `"transformers"` and `"attention mechanism"`)
-2. Click **Find Connection**
-3. See an **interactive graph** showing how the topics relate through your knowledge graph
-4. Read the **connection summary** below the graph
-
-### 4. Manage Sources
-
-The **sidebar** shows all ingested sources for this session. You can:
-- See the source type, title, and timestamp
-- Click 🗑️ to remove a source from the session view
-- Click **Forget Everything** to clear the session
-
----
-
-## ⚙️ Configuration
-
-Edit `.env` to customize:
-
-| Variable | Description |
-|----------|-------------|
-| `COGNEE_BASE_URL` | Your Cognee Cloud tenant URL (from the console) |
-| `COGNEE_API_KEY` | Your Cognee Cloud API key (from the console) |
-| `LOG_LEVEL` | Logging verbosity (`INFO`, `DEBUG`, `WARNING`) |
-
----
-
-## 🔧 Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Sidebar shows 🔴 Disconnected | Check `COGNEE_BASE_URL` and `COGNEE_API_KEY` in `.env` |
-| `401 Unauthorized` error | API key is wrong or expired — regenerate it in the Cognee Cloud console |
-| `Cannot reach Cognee Cloud` | Check your internet connection |
-| Import errors | Make sure you're running from the `studymind/` directory |
-| PDF has no extractable text | The PDF may be image-only (scanned). Try a text-based PDF |
-| YouTube transcript unavailable | The video may have disabled transcripts or be in an unsupported language |
+### 4. Topic Study Guides & Audio Overviews
+In the sidebar next to each topic row:
+- Click `[📖]` (Study Guide) to generate key concepts and review questions. Download the output directly as `.md`.
+- Click `[🎙️]` (Audio Overview) to generate a conversational speech script and play a generated podcast voice-over natively inside Streamlit.
 
 ---
 
@@ -196,6 +164,7 @@ Edit `.env` to customize:
 |-------|-----------|
 | UI | [Streamlit](https://streamlit.io) |
 | Knowledge Graph | [Cognee Cloud](https://app.cognee.ai) REST API |
+| Speech Engine (TTS) | [pyttsx3](https://pyttsx3.readthedocs.io/) |
 | PDF extraction | [PyMuPDF](https://pymupdf.readthedocs.io/) |
 | Web scraping | [trafilatura](https://trafilatura.readthedocs.io/) |
 | YouTube transcripts | [youtube-transcript-api](https://pypi.org/project/youtube-transcript-api/) |
