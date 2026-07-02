@@ -5,14 +5,15 @@ Async-compatible functions to ingest study material from four source types
 into the Cognee Cloud knowledge graph. Each function:
   1. Parses the source into plain text (locally, unchanged)
   2. POSTs the text as a file upload to POST /api/v1/remember
-  3. Returns a status dict for the UI
+     using topic_id as the datasetName (enables scoped recall)
+  3. Registers the source in topics.json
+  4. Returns a status dict for the UI
 
 The Cognee Cloud handles chunking, embedding, and graph construction
 server-side — no local LLM or DB required.
 """
 
 import re
-import json
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -21,6 +22,12 @@ from typing import Optional
 import httpx
 
 from core.config import COGNEE_BASE_URL, COGNEE_API_KEY, DATA_DIR, _headers
+from core.topics import (
+    GENERAL_TOPIC_ID,
+    load_topics,
+    create_topic,
+    add_dataset_to_topic,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -28,10 +35,7 @@ from core.config import COGNEE_BASE_URL, COGNEE_API_KEY, DATA_DIR, _headers
 # ---------------------------------------------------------------------------
 
 def _sanitize_dataset_name(name: str) -> str:
-    """Convert a human-readable name into a valid Cognee dataset name.
-
-    Cognee dataset names must be alphanumeric + underscores, no spaces.
-    """
+    """Convert a human-readable name into a valid Cognee dataset name."""
     sanitized = re.sub(r"[^a-zA-Z0-9]", "_", name)
     sanitized = re.sub(r"_+", "_", sanitized)
     sanitized = sanitized.strip("_")
@@ -41,23 +45,23 @@ def _sanitize_dataset_name(name: str) -> str:
 
 def _make_dataset_name(source_type: str, title: str) -> str:
     """Generate a unique dataset name from source type and title."""
-    base = f"{source_type}_{_sanitize_dataset_name(title)}"
-    return base
+    return f"{source_type}_{_sanitize_dataset_name(title)}"
 
 
-def _upload_to_cloud(text: str, dataset_name: str, timeout: int = 60) -> dict:
+def _upload_to_cloud(
+    text: str,
+    dataset_name: str,
+    timeout: int = 60,
+) -> dict:
     """Upload plain text to Cognee Cloud via POST /api/v1/remember.
-
-    The API requires a file upload (multipart/form-data). We write the text
-    to a temp file and send it with the datasetName field.
 
     Args:
         text: The full text content to ingest.
-        dataset_name: Cognee dataset name (alphanumeric + underscores).
+        dataset_name: Cognee datasetName (topic_id when topic-aware).
         timeout: HTTP timeout in seconds.
 
     Returns:
-        dict with keys: ok (bool), error (str|None), status_code (int|None)
+        dict: ok (bool), error (str|None), status_code (int|None)
     """
     if not COGNEE_BASE_URL or not COGNEE_API_KEY:
         return {
@@ -66,14 +70,10 @@ def _upload_to_cloud(text: str, dataset_name: str, timeout: int = 60) -> dict:
             "status_code": None,
         }
 
-    # Write text to a temporary file — the API requires file upload
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".txt",
-            delete=False,
-            encoding="utf-8",
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as tmp:
             tmp.write(text)
             tmp_path = tmp.name
@@ -81,7 +81,7 @@ def _upload_to_cloud(text: str, dataset_name: str, timeout: int = 60) -> dict:
         with open(tmp_path, "rb") as f:
             resp = httpx.post(
                 f"{COGNEE_BASE_URL}/api/v1/remember",
-                headers=_headers(),  # X-Api-Key header only; Content-Type set by httpx multipart
+                headers=_headers(),
                 files={"data": (f"{dataset_name}.txt", f, "text/plain")},
                 data={"datasetName": dataset_name},
                 timeout=timeout,
@@ -89,16 +89,16 @@ def _upload_to_cloud(text: str, dataset_name: str, timeout: int = 60) -> dict:
 
         if resp.status_code in (200, 201, 202):
             return {"ok": True, "error": None, "status_code": resp.status_code}
-        else:
-            try:
-                detail = resp.json()
-            except Exception:
-                detail = resp.text[:300]
-            return {
-                "ok": False,
-                "error": f"Cognee Cloud returned HTTP {resp.status_code}: {detail}",
-                "status_code": resp.status_code,
-            }
+
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text[:300]
+        return {
+            "ok": False,
+            "error": f"Cognee Cloud returned HTTP {resp.status_code}: {detail}",
+            "status_code": resp.status_code,
+        }
 
     except httpx.ConnectError:
         return {
@@ -116,36 +116,65 @@ def _upload_to_cloud(text: str, dataset_name: str, timeout: int = 60) -> dict:
             "status_code": None,
         }
     finally:
-        # Clean up temp file
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
+
+
+def _resolve_upload_dataset(topic_id: Optional[str], fallback_dataset: str) -> str:
+    """Determine which Cognee datasetName to use for the upload.
+
+    When topic_id is provided (and not 'general'), use the topic_id directly
+    as the datasetName so /api/v1/recall can filter by datasets=[topic_id].
+    For 'general' or no topic, use the source-type-based dataset name.
+    """
+    if topic_id and topic_id != GENERAL_TOPIC_ID:
+        return topic_id
+    return fallback_dataset
+
+
+def _register_in_topic(topic_id: Optional[str], dataset_name: str) -> None:
+    """Add dataset_name to the topic in topics.json. Creates topic if needed."""
+    tid = topic_id or GENERAL_TOPIC_ID
+    topics = load_topics()
+    if tid not in topics:
+        # Shouldn't happen — General always exists — but guard anyway
+        create_topic("General" if tid == GENERAL_TOPIC_ID else tid)
+    add_dataset_to_topic(tid, dataset_name)
 
 
 # ---------------------------------------------------------------------------
 # Public ingestion functions
 # ---------------------------------------------------------------------------
 
-async def ingest_pdf(file_path: str, title: Optional[str] = None) -> dict:
+async def ingest_pdf(
+    file_path: str,
+    title: Optional[str] = None,
+    topic_id: Optional[str] = None,
+) -> dict:
     """Ingest a PDF file into the Cognee Cloud knowledge graph.
 
     Args:
         file_path: Path to the PDF file on disk.
         title: Optional human-readable title. Defaults to filename.
+        topic_id: Optional topic to assign this source to. Uses topic_id
+                  as the Cognee datasetName for scoped recall.
 
     Returns:
-        dict with keys: source_type, title, dataset_name, status, error, timestamp
+        dict: source_type, title, dataset_name, topic_id, status, error, timestamp
     """
     import fitz  # PyMuPDF
 
     if title is None:
         title = Path(file_path).stem
 
-    dataset_name = _make_dataset_name("pdf", title)
+    fallback_dataset = _make_dataset_name("pdf", title)
+    upload_dataset   = _resolve_upload_dataset(topic_id, fallback_dataset)
 
     result = {
         "source_type": "pdf",
         "title": title,
-        "dataset_name": dataset_name,
+        "dataset_name": upload_dataset,
+        "topic_id": topic_id or GENERAL_TOPIC_ID,
         "file_path": file_path,
         "status": "pending",
         "error": None,
@@ -153,7 +182,6 @@ async def ingest_pdf(file_path: str, title: Optional[str] = None) -> dict:
     }
 
     try:
-        # Extract text from PDF (local, unchanged)
         doc = fitz.open(file_path)
         pages_text = []
         for page_num, page in enumerate(doc):
@@ -169,11 +197,12 @@ async def ingest_pdf(file_path: str, title: Optional[str] = None) -> dict:
 
         full_text = f"Source: PDF — {title}\n\n" + "\n\n".join(pages_text)
 
-        # Upload to Cognee Cloud
-        upload = _upload_to_cloud(full_text, dataset_name)
+        upload = _upload_to_cloud(full_text, upload_dataset)
         if upload["ok"]:
             result["status"] = "success"
             result["page_count"] = len(pages_text)
+            result["excerpt"] = full_text[:500]
+            _register_in_topic(topic_id, upload_dataset)
         else:
             result["status"] = "error"
             result["error"] = upload["error"]
@@ -185,18 +214,21 @@ async def ingest_pdf(file_path: str, title: Optional[str] = None) -> dict:
     return result
 
 
-async def ingest_youtube(url: str) -> dict:
+async def ingest_youtube(
+    url: str,
+    topic_id: Optional[str] = None,
+) -> dict:
     """Ingest a YouTube video transcript into the Cognee Cloud knowledge graph.
 
     Args:
-        url: YouTube video URL (supports youtube.com and youtu.be formats).
+        url: YouTube video URL.
+        topic_id: Optional topic to assign this source to.
 
     Returns:
         Status dict.
     """
     from youtube_transcript_api import YouTubeTranscriptApi
 
-    # Extract video ID
     video_id = None
     if "youtu.be/" in url:
         video_id = url.split("youtu.be/")[-1].split("?")[0]
@@ -210,17 +242,20 @@ async def ingest_youtube(url: str) -> dict:
             "source_type": "youtube",
             "title": url,
             "dataset_name": "",
+            "topic_id": topic_id or GENERAL_TOPIC_ID,
             "status": "error",
             "error": f"Could not extract video ID from URL: {url}",
             "timestamp": datetime.now().isoformat(),
         }
 
-    dataset_name = _make_dataset_name("yt", video_id)
+    fallback_dataset = _make_dataset_name("yt", video_id)
+    upload_dataset   = _resolve_upload_dataset(topic_id, fallback_dataset)
 
     result = {
         "source_type": "youtube",
         "title": f"YouTube: {video_id}",
-        "dataset_name": dataset_name,
+        "dataset_name": upload_dataset,
+        "topic_id": topic_id or GENERAL_TOPIC_ID,
         "url": url,
         "status": "pending",
         "error": None,
@@ -228,7 +263,6 @@ async def ingest_youtube(url: str) -> dict:
     }
 
     try:
-        # Fetch transcript (local, unchanged)
         ytt_api = YouTubeTranscriptApi()
         transcript = ytt_api.fetch(video_id)
 
@@ -243,15 +277,15 @@ async def ingest_youtube(url: str) -> dict:
             return result
 
         full_text = (
-            f"Source: YouTube Video — {video_id}\n"
-            f"URL: {url}\n\n"
+            f"Source: YouTube Video — {video_id}\nURL: {url}\n\n"
             + " ".join(lines)
         )
 
-        # Upload to Cognee Cloud
-        upload = _upload_to_cloud(full_text, dataset_name)
+        upload = _upload_to_cloud(full_text, upload_dataset)
         if upload["ok"]:
             result["status"] = "success"
+            result["excerpt"] = full_text[:500]
+            _register_in_topic(topic_id, upload_dataset)
         else:
             result["status"] = "error"
             result["error"] = upload["error"]
@@ -263,14 +297,17 @@ async def ingest_youtube(url: str) -> dict:
     return result
 
 
-async def ingest_url(url: str, title: Optional[str] = None) -> dict:
+async def ingest_url(
+    url: str,
+    title: Optional[str] = None,
+    topic_id: Optional[str] = None,
+) -> dict:
     """Ingest a web article into the Cognee Cloud knowledge graph.
-
-    Uses trafilatura for robust article text extraction.
 
     Args:
         url: Web article URL.
         title: Optional title override.
+        topic_id: Optional topic to assign this source to.
 
     Returns:
         Status dict.
@@ -282,12 +319,14 @@ async def ingest_url(url: str, title: Optional[str] = None) -> dict:
         parsed = urlparse(url)
         title = f"{parsed.netloc}{parsed.path}"[:80]
 
-    dataset_name = _make_dataset_name("web", title)
+    fallback_dataset = _make_dataset_name("web", title)
+    upload_dataset   = _resolve_upload_dataset(topic_id, fallback_dataset)
 
     result = {
         "source_type": "web",
         "title": title,
-        "dataset_name": dataset_name,
+        "dataset_name": upload_dataset,
+        "topic_id": topic_id or GENERAL_TOPIC_ID,
         "url": url,
         "status": "pending",
         "error": None,
@@ -295,7 +334,6 @@ async def ingest_url(url: str, title: Optional[str] = None) -> dict:
     }
 
     try:
-        # Fetch and extract article text (local, unchanged)
         downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             result["status"] = "error"
@@ -314,23 +352,21 @@ async def ingest_url(url: str, title: Optional[str] = None) -> dict:
             result["error"] = "Could not extract meaningful text from the page."
             return result
 
-        # Try to get the page title from metadata
         metadata = trafilatura.extract_metadata(downloaded)
         if metadata and metadata.title:
             result["title"] = metadata.title
-            dataset_name = _make_dataset_name("web", metadata.title)
-            result["dataset_name"] = dataset_name
+            # Note: keep upload_dataset as topic_id for scoping
+            result["dataset_name"] = upload_dataset
 
         full_text = (
-            f"Source: Web Article — {result['title']}\n"
-            f"URL: {url}\n\n"
-            + extracted
+            f"Source: Web Article — {result['title']}\nURL: {url}\n\n" + extracted
         )
 
-        # Upload to Cognee Cloud
-        upload = _upload_to_cloud(full_text, dataset_name)
+        upload = _upload_to_cloud(full_text, upload_dataset)
         if upload["ok"]:
             result["status"] = "success"
+            result["excerpt"] = full_text[:500]
+            _register_in_topic(topic_id, upload_dataset)
         else:
             result["status"] = "error"
             result["error"] = upload["error"]
@@ -342,22 +378,29 @@ async def ingest_url(url: str, title: Optional[str] = None) -> dict:
     return result
 
 
-async def ingest_text(text: str, title: str = "Untitled Note") -> dict:
+async def ingest_text(
+    text: str,
+    title: str = "Untitled Note",
+    topic_id: Optional[str] = None,
+) -> dict:
     """Ingest typed/pasted notes into the Cognee Cloud knowledge graph.
 
     Args:
         text: The note content.
         title: Title for the note.
+        topic_id: Optional topic to assign this source to.
 
     Returns:
         Status dict.
     """
-    dataset_name = _make_dataset_name("note", title)
+    fallback_dataset = _make_dataset_name("note", title)
+    upload_dataset   = _resolve_upload_dataset(topic_id, fallback_dataset)
 
     result = {
         "source_type": "note",
         "title": title,
-        "dataset_name": dataset_name,
+        "dataset_name": upload_dataset,
+        "topic_id": topic_id or GENERAL_TOPIC_ID,
         "status": "pending",
         "error": None,
         "timestamp": datetime.now().isoformat(),
@@ -371,10 +414,11 @@ async def ingest_text(text: str, title: str = "Untitled Note") -> dict:
     try:
         full_text = f"Source: Personal Note — {title}\n\n{text}"
 
-        # Upload to Cognee Cloud
-        upload = _upload_to_cloud(full_text, dataset_name)
+        upload = _upload_to_cloud(full_text, upload_dataset)
         if upload["ok"]:
             result["status"] = "success"
+            result["excerpt"] = full_text[:500]
+            _register_in_topic(topic_id, upload_dataset)
         else:
             result["status"] = "error"
             result["error"] = upload["error"]
@@ -387,37 +431,20 @@ async def ingest_text(text: str, title: str = "Untitled Note") -> dict:
 
 
 async def forget_source(dataset_name: str) -> dict:
-    """Remove a dataset from tracking.
+    """Remove a dataset from session tracking.
 
-    Note: The Cognee Cloud REST API does not currently expose a delete
-    endpoint, so this removes the source from the UI session only.
-
-    Args:
-        dataset_name: The dataset name to forget.
-
-    Returns:
-        dict with status and info.
+    Note: No cloud delete API is available. Session-only removal.
     """
     return {
         "status": "success",
         "dataset_name": dataset_name,
-        "note": (
-            "Source removed from this session. "
-            "Data persists in Cognee Cloud (no delete API available)."
-        ),
+        "note": "Source removed from session. Data persists in Cognee Cloud.",
     }
 
 
 async def forget_all() -> dict:
-    """Remove ALL sources from tracking.
-
-    Note: The Cognee Cloud REST API does not currently expose a delete
-    endpoint, so this clears the UI session only.
-    """
+    """Remove ALL sources from session tracking."""
     return {
         "status": "success",
-        "note": (
-            "Session cleared. Data persists in Cognee Cloud "
-            "(no delete API available)."
-        ),
+        "note": "Session cleared. Data persists in Cognee Cloud.",
     }

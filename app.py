@@ -32,7 +32,19 @@ from core.ingest import (
     forget_source,
     forget_all,
 )
-from core.query import ask, connect_topics, summarize_topic
+from core.query import ask, connect_topics, summarize_topic, ask_scoped, cross_topic_ask
+from core.topics import (
+    load_topics,
+    create_topic,
+    delete_topic,
+    add_dataset_to_topic,
+    get_topic_datasets,
+    suggest_topic_name,
+    generate_study_guide,
+    generate_audio_script,
+    synthesize_audio,
+    GENERAL_TOPIC_ID,
+)
 
 # ---------------------------------------------------------------------------
 # Async helper — Streamlit runs synchronously; wrap async calls safely
@@ -215,6 +227,18 @@ if "chat_history" not in st.session_state:
 if "cloud_status" not in st.session_state:
     st.session_state.cloud_status = check_cognee_cloud(timeout=5)
 
+if "selected_topic" not in st.session_state:
+    st.session_state.selected_topic = "all_topics"
+
+if "suggested_topic" not in st.session_state:
+    st.session_state.suggested_topic = None
+
+if "active_study_guide_topic" not in st.session_state:
+    st.session_state.active_study_guide_topic = None
+
+if "active_audio_topic" not in st.session_state:
+    st.session_state.active_audio_topic = None
+
 
 # ---------------------------------------------------------------------------
 # Sidebar — Knowledge Base & Status
@@ -253,16 +277,143 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Knowledge Base
-    st.markdown("### 📚 Knowledge Base")
+    # Load topics
+    topics = load_topics()
 
+    # Topics Section
+    st.markdown("### 📚 Topics (Notebooks)")
+
+    # "All Topics" selector
+    all_selected = st.session_state.selected_topic == "all_topics"
+    if st.button(
+        "🗂️ All Topics",
+        key="btn_all_topics",
+        use_container_width=True,
+        type="primary" if all_selected else "secondary",
+    ):
+        st.session_state.selected_topic = "all_topics"
+        st.rerun()
+
+    # List each topic with color dot and options
+    for tid, topic in topics.items():
+        topic_sources = [
+            s for s in st.session_state.sources
+            if s.get("topic_id") == tid or s.get("dataset_name") in topic.get("datasets", [])
+        ]
+        count = len(topic_sources)
+        is_selected = st.session_state.selected_topic == tid
+
+        col_dot, col_name, col_sg, col_aud = st.columns([0.15, 0.55, 0.15, 0.15])
+        with col_dot:
+            st.markdown(f"<p style='color: {topic['color']}; margin-top: 0.6rem; font-size: 1.1rem;'>●</p>", unsafe_allow_html=True)
+        with col_name:
+            if st.button(
+                f"{topic['name']} ({count})",
+                key=f"sel_{tid}",
+                use_container_width=True,
+                type="primary" if is_selected else "secondary",
+            ):
+                st.session_state.selected_topic = tid
+                st.rerun()
+        with col_sg:
+            if st.button("📖", key=f"sg_{tid}", help=f"Study Guide for {topic['name']}"):
+                st.session_state.active_study_guide_topic = tid
+                st.session_state.active_audio_topic = None
+                st.rerun()
+        with col_aud:
+            if st.button("🎙️", key=f"aud_{tid}", help=f"Audio Overview for {topic['name']}"):
+                st.session_state.active_audio_topic = tid
+                st.session_state.active_study_guide_topic = None
+                st.rerun()
+
+    # New Topic Form
+    with st.expander("➕ New Topic"):
+        new_topic_name = st.text_input("Topic Name", key="sidebar_new_topic_input")
+        if st.button("Create Topic", key="btn_create_topic", use_container_width=True):
+            if new_topic_name.strip():
+                new_t = create_topic(new_topic_name)
+                st.session_state.selected_topic = new_t["id"]
+                st.success(f"Topic '{new_topic_name}' created!")
+                st.rerun()
+
+    # Render Study Guide Expander below topic list
+    if st.session_state.active_study_guide_topic:
+        sg_tid = st.session_state.active_study_guide_topic
+        sg_topic = topics.get(sg_tid)
+        if sg_topic:
+            st.markdown("---")
+            with st.expander(f"📖 Study Guide: {sg_topic['name']}", expanded=True):
+                # Close button
+                if st.button("Close Guide", key="close_sg"):
+                    st.session_state.active_study_guide_topic = None
+                    st.rerun()
+
+                with st.spinner("Generating study guide..."):
+                    guide_content = generate_study_guide(sg_tid)
+
+                st.markdown(guide_content)
+
+                if "Could not generate study guide" not in guide_content and "No sources" not in guide_content:
+                    st.download_button(
+                        label="📥 Download as .md",
+                        data=guide_content,
+                        file_name=f"{sg_topic['name'].lower().replace(' ', '_')}_study_guide.md",
+                        mime="text/markdown",
+                        key="btn_download_sg",
+                        use_container_width=True,
+                    )
+
+    # Render Audio Overview Expander below topic list
+    if st.session_state.active_audio_topic:
+        aud_tid = st.session_state.active_audio_topic
+        aud_topic = topics.get(aud_tid)
+        if aud_topic:
+            st.markdown("---")
+            with st.expander(f"🎙️ Audio Overview: {aud_topic['name']}", expanded=True):
+                # Close button
+                if st.button("Close Audio", key="close_aud"):
+                    st.session_state.active_audio_topic = None
+                    st.rerun()
+
+                with st.spinner("Generating audio script..."):
+                    script_content = generate_audio_script(aud_tid)
+
+                # Synthesize
+                with st.spinner("Synthesizing audio file..."):
+                    audio_path = synthesize_audio(aud_tid, script_content)
+
+                if audio_path and os.path.exists(audio_path):
+                    with open(audio_path, "rb") as f:
+                        st.audio(f.read(), format="audio/wav")
+                else:
+                    st.info("Install pyttsx3 for audio playback. Displaying script text only.")
+
+                st.markdown("**Podcast Transcript:**")
+                st.caption(script_content)
+
+    st.markdown("---")
+
+    # Knowledge Base Sources
+    st.markdown("### 📎 Sources in Active Topic")
+
+    # Filter sources list by active topic
+    active_tid = st.session_state.selected_topic
     sources = st.session_state.sources
     successful_sources = [s for s in sources if s.get("status") == "success"]
 
-    if successful_sources:
-        st.caption(f"{len(successful_sources)} source{'s' if len(successful_sources) != 1 else ''} ingested")
+    if active_tid != "all_topics":
+        active_topic_name = topics.get(active_tid, {}).get("name", active_tid)
+        st.caption(f"Showing sources in **{active_topic_name}**")
+        filtered_sources = [
+            s for s in successful_sources
+            if s.get("topic_id") == active_tid or s.get("dataset_name") in topics.get(active_tid, {}).get("datasets", [])
+        ]
+    else:
+        st.caption("Showing all ingested sources")
+        filtered_sources = successful_sources
 
-        for i, source in enumerate(successful_sources):
+    if filtered_sources:
+        for i, source in enumerate(filtered_sources):
             icon = {
                 "pdf": "📄", "youtube": "🎥", "web": "🌐", "note": "📝"
             }.get(source.get("source_type", ""), "📎")
@@ -278,33 +429,47 @@ with st.sidebar:
                 """, unsafe_allow_html=True)
 
             with col2:
-                if st.button("🗑️", key=f"forget_{i}", help="Remove this source"):
-                    with st.spinner("Forgetting..."):
+                if st.button("🗑️", key=f"forget_{active_tid}_{i}", help="Remove this source"):
+                    with st.spinner("Removing..."):
                         result = run_async(forget_source(source["dataset_name"]))
                     if result["status"] == "success":
                         st.session_state.sources = [
                             s for s in st.session_state.sources
                             if s.get("dataset_name") != source["dataset_name"]
                         ]
+                        # Remove from topic lists
+                        for tid in topics:
+                            if source["dataset_name"] in topics[tid].get("datasets", []):
+                                topics[tid]["datasets"].remove(source["dataset_name"])
+                                topics[tid]["study_guide"] = None
+                                topics[tid]["audio_script"] = None
+                        save_topics(topics)
                         st.rerun()
                     else:
                         st.error(result.get("error", "Failed to forget"))
 
-        st.markdown("---")
-        if st.button("🗑️ Forget Everything", use_container_width=True, type="secondary"):
-            with st.spinner("Clearing all knowledge..."):
-                result = run_async(forget_all())
-            if result["status"] == "success":
-                st.session_state.sources = []
-                st.session_state.chat_history = []
-                st.rerun()
-            else:
-                st.error(result.get("error", "Failed"))
+        if active_tid == "all_topics":
+            st.markdown("---")
+            if st.button("🗑️ Forget Everything", use_container_width=True, type="secondary"):
+                with st.spinner("Clearing all knowledge..."):
+                    result = run_async(forget_all())
+                if result["status"] == "success":
+                    st.session_state.sources = []
+                    st.session_state.chat_history = []
+                    # Reset datasets lists in all topics
+                    for tid in topics:
+                        topics[tid]["datasets"] = []
+                        topics[tid]["study_guide"] = None
+                        topics[tid]["audio_script"] = None
+                    save_topics(topics)
+                    st.rerun()
+                else:
+                    st.error(result.get("error", "Failed"))
     else:
-        st.caption("No sources ingested yet.")
+        st.caption("No sources in this topic.")
         st.markdown(
             '<div style="color: #484f58; font-size: 13px;">'
-            "Use the <b>📥 Ingest</b> tab to add study material."
+            "Use the <b>📥 Ingest</b> tab to add material."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -335,6 +500,85 @@ with tab_ingest:
     st.markdown("### Add Study Material")
     st.caption("Ingest PDFs, YouTube videos, web articles, or your own notes into the knowledge graph.")
 
+    # 1. Interactive Topic Suggestion Banner
+    if st.session_state.suggested_topic:
+        sug = st.session_state.suggested_topic
+        st.info(f"💡 **Suggested Topic:** The content from **{sug['source_title']}** seems to belong to topic **'{sug['name']}'**.")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("Add to suggested Topic", key="accept_suggestion", use_container_width=True, type="primary"):
+                # Find or create the topic
+                current_topics = load_topics()
+                target_tid = None
+                for tid, t in current_topics.items():
+                    if t["name"].lower() == sug["name"].lower():
+                        target_tid = tid
+                        break
+                if not target_tid:
+                    new_t = create_topic(sug["name"])
+                    target_tid = new_t["id"]
+                
+                # Re-associate dataset with this topic in topics.json
+                add_dataset_to_topic(target_tid, sug["source_dataset"])
+                
+                # Update source dict in session state
+                for src in st.session_state.sources:
+                    if src.get("dataset_name") == sug["source_dataset"]:
+                        src["topic_id"] = target_tid
+                
+                st.session_state.suggested_topic = None
+                st.session_state.selected_topic = target_tid
+                st.success(f"Successfully added to topic '{sug['name']}'!")
+                st.rerun()
+        with col_no:
+            if st.button("Keep in current topic", key="reject_suggestion", use_container_width=True):
+                st.session_state.suggested_topic = None
+                st.rerun()
+
+    # 2. Topic Selector for Ingestion
+    current_topics = load_topics()
+    topic_options = {t["name"]: tid for tid, t in current_topics.items()}
+    topic_list = list(topic_options.keys()) + ["➕ New Topic..."]
+
+    # Locate index of currently active topic in sidebar to default to it
+    active_tid = st.session_state.selected_topic
+    default_idx = 0
+    if active_tid != "all_topics":
+        active_name = current_topics.get(active_tid, {}).get("name")
+        if active_name in topic_options:
+            default_idx = list(topic_options.keys()).index(active_name)
+
+    selected_option = st.selectbox(
+        "Ingest into topic:",
+        topic_list,
+        index=default_idx,
+        help="Select which topic collection to add this source to."
+    )
+
+    ingest_topic_id = None
+    if selected_option == "➕ New Topic...":
+        new_t_name = st.text_input("New Topic Name:", key="ingest_new_topic_name_input")
+        if new_t_name.strip():
+            # Check if name already exists
+            found_tid = None
+            for tid, t in current_topics.items():
+                if t["name"].lower() == new_t_name.strip().lower():
+                    found_tid = tid
+                    break
+            if found_tid:
+                ingest_topic_id = found_tid
+            else:
+                if st.button("Confirm and Create Topic", key="btn_confirm_create_topic"):
+                    new_t = create_topic(new_t_name)
+                    ingest_topic_id = new_t["id"]
+                    st.session_state.selected_topic = ingest_topic_id
+                    st.success(f"Topic '{new_t_name}' created!")
+                    st.rerun()
+    else:
+        ingest_topic_id = topic_options[selected_option]
+
+    st.markdown("---")
+
     ingest_col1, ingest_col2 = st.columns(2, gap="large")
 
     # --- PDF Upload ---
@@ -348,13 +592,12 @@ with tab_ingest:
         )
         if uploaded_file is not None:
             if st.button("📄 Ingest PDF", key="btn_ingest_pdf", use_container_width=True):
-                # Save uploaded file to data dir
                 save_path = DATA_DIR / uploaded_file.name
                 with open(save_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
                 with st.spinner("📄 Extracting text & uploading to Cognee Cloud..."):
-                    result = run_async(ingest_pdf(str(save_path), title=uploaded_file.name))
+                    result = run_async(ingest_pdf(str(save_path), title=uploaded_file.name, topic_id=ingest_topic_id))
 
                 if result["status"] == "success":
                     st.session_state.sources.append(result)
@@ -363,6 +606,15 @@ with tab_ingest:
                         f"({result.get('page_count', '?')} pages)",
                         icon="📄",
                     )
+                    # Trigger AI topic suggestion
+                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    if sug:
+                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.session_state.suggested_topic = {
+                            "name": sug,
+                            "source_dataset": result["dataset_name"],
+                            "source_title": result["title"]
+                        }
                     st.rerun()
                 else:
                     st.error(f"❌ {result.get('error', 'Unknown error')}")
@@ -380,11 +632,20 @@ with tab_ingest:
         if yt_url:
             if st.button("🎥 Ingest YouTube", key="btn_ingest_yt", use_container_width=True):
                 with st.spinner("🎥 Fetching transcript & uploading to Cognee Cloud..."):
-                    result = run_async(ingest_youtube(yt_url))
+                    result = run_async(ingest_youtube(yt_url, topic_id=ingest_topic_id))
 
                 if result["status"] == "success":
                     st.session_state.sources.append(result)
                     st.success(f"✅ Ingested **{result['title']}**", icon="🎥")
+                    # Trigger AI topic suggestion
+                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    if sug:
+                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.session_state.suggested_topic = {
+                            "name": sug,
+                            "source_dataset": result["dataset_name"],
+                            "source_title": result["title"]
+                        }
                     st.rerun()
                 else:
                     st.error(f"❌ {result.get('error', 'Unknown error')}")
@@ -401,11 +662,20 @@ with tab_ingest:
         if web_url:
             if st.button("🌐 Ingest Article", key="btn_ingest_web", use_container_width=True):
                 with st.spinner("🌐 Extracting article & uploading to Cognee Cloud..."):
-                    result = run_async(ingest_url(web_url))
+                    result = run_async(ingest_url(web_url, topic_id=ingest_topic_id))
 
                 if result["status"] == "success":
                     st.session_state.sources.append(result)
                     st.success(f"✅ Ingested **{result['title'][:60]}**", icon="🌐")
+                    # Trigger AI topic suggestion
+                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    if sug:
+                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.session_state.suggested_topic = {
+                            "name": sug,
+                            "source_dataset": result["dataset_name"],
+                            "source_title": result["title"]
+                        }
                     st.rerun()
                 else:
                     st.error(f"❌ {result.get('error', 'Unknown error')}")
@@ -429,12 +699,21 @@ with tab_ingest:
             if st.button("📝 Ingest Notes", key="btn_ingest_note", use_container_width=True):
                 with st.spinner("📝 Processing notes & uploading to Cognee Cloud..."):
                     result = run_async(
-                        ingest_text(note_text, title=note_title or "Untitled Note")
+                        ingest_text(note_text, title=note_title or "Untitled Note", topic_id=ingest_topic_id)
                     )
 
                 if result["status"] == "success":
                     st.session_state.sources.append(result)
                     st.success(f"✅ Ingested **{result['title']}**", icon="📝")
+                    # Trigger AI topic suggestion
+                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    if sug:
+                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.session_state.suggested_topic = {
+                            "name": sug,
+                            "source_dataset": result["dataset_name"],
+                            "source_title": result["title"]
+                        }
                     st.rerun()
                 else:
                     st.error(f"❌ {result.get('error', 'Unknown error')}")
@@ -449,10 +728,46 @@ with tab_ask:
     if not [s for s in st.session_state.sources if s.get("status") == "success"]:
         st.info("📚 Ingest some study material first using the **Ingest** tab.", icon="💡")
     else:
+        # Load topics
+        current_topics = load_topics()
+        ask_options = {"All Topics": "all_topics"}
+        for tid, t in current_topics.items():
+            ask_options[t["name"]] = tid
+
+        # Find the default index based on sidebar selection
+        sidebar_tid = st.session_state.selected_topic
+        default_ask_idx = 0
+        if sidebar_tid != "all_topics":
+            sb_name = current_topics.get(sidebar_tid, {}).get("name")
+            if sb_name in ask_options:
+                default_ask_idx = list(ask_options.keys()).index(sb_name)
+
+        col_scope, col_cross = st.columns([2, 2])
+        with col_scope:
+            ask_scope_name = st.selectbox("Ask about:", list(ask_options.keys()), index=default_ask_idx)
+            selected_ask_tid = ask_options[ask_scope_name]
+
+        with col_cross:
+            # Cross-topic search is only available when a specific topic is selected
+            enable_cross = False
+            if selected_ask_tid != "all_topics":
+                st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+                enable_cross = st.checkbox("🔍 Find connections across topics", value=False)
+
+        st.markdown("---")
+
         # Display chat history
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+                if msg.get("primary_section") or msg.get("cross_section"):
+                    st.markdown("### 🎯 From your topic")
+                    st.markdown(msg["primary_section"])
+                    if msg.get("cross_section"):
+                        st.markdown("### 🔗 Connected from other topics")
+                        st.markdown(msg["cross_section"])
+                else:
+                    st.markdown(msg["content"])
+                
                 if msg.get("sources"):
                     with st.expander("📎 Sources"):
                         for src in msg["sources"]:
@@ -474,14 +789,35 @@ with tab_ask:
             # Get answer
             with st.chat_message("assistant"):
                 with st.spinner("🤔 Querying Cognee Cloud knowledge graph..."):
-                    result = run_async(ask(question))
+                    if selected_ask_tid == "all_topics":
+                        result = run_async(ask(question))
+                    elif enable_cross:
+                        result = run_async(cross_topic_ask(question, selected_ask_tid, list(current_topics.keys())))
+                    else:
+                        result = run_async(ask_scoped(question, selected_ask_tid))
 
                 if result.get("error"):
                     st.error(result["error"])
                     answer_text = f"⚠️ Error: {result['error']}"
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": answer_text,
+                        "sources": [],
+                    })
                 else:
                     answer_text = result.get("answer", "No answer generated.")
-                    st.markdown(answer_text)
+                    
+                    if result.get("primary_section") or result.get("cross_section"):
+                        # Custom render for cross-topic synthesis
+                        st.markdown(f"### 🎯 From your topic ({ask_scope_name})")
+                        st.markdown(result["primary_section"])
+                        st.markdown("### 🔗 Connected from other topics")
+                        if result.get("cross_section"):
+                            st.markdown(result["cross_section"])
+                        else:
+                            st.caption("No connections found.")
+                    else:
+                        st.markdown(answer_text)
 
                     if result.get("sources"):
                         with st.expander("📎 Sources"):
@@ -490,12 +826,15 @@ with tab_ask:
 
                     st.caption(f"_Search type: {result.get('search_type', 'unknown')}_")
 
-            # Save to history
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": answer_text,
-                "sources": result.get("sources", []),
-            })
+                    # Save to history with sections
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": answer_text,
+                        "primary_section": result.get("primary_section", ""),
+                        "cross_section": result.get("cross_section", ""),
+                        "sources": result.get("sources", []),
+                    })
+            st.rerun()
 
         # Topic summary section
         st.markdown("---")

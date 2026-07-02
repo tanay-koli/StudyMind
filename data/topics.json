@@ -1,0 +1,15 @@
+{
+  "general": {
+    "id": "general",
+    "name": "General",
+    "created_at": "2026-01-01T00:00:00",
+    "color": "#A4B0BE",
+    "datasets": [
+      "note_test_note"
+    ],
+    "study_guide": null,
+    "study_guide_generated_at": null,
+    "audio_script": null,
+    "audio_generated_at": null
+  }
+}

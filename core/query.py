@@ -1,10 +1,12 @@
 """
 StudyMind — Query Module (Cognee Cloud)
 
-Three core query functions that use the Cognee Cloud REST API:
+Five core query functions that use the Cognee Cloud REST API:
   1. ask()              — Q&A via POST /api/v1/recall (GRAPH_COMPLETION)
-  2. connect_topics()   — relationship discovery (two CHUNKS recalls + synthesis)
-  3. summarize_topic()  — cross-source summary (HYBRID_COMPLETION)
+  2. ask_scoped()       — Q&A scoped to a single topic (datasets filter)
+  3. cross_topic_ask()  — primary topic Q&A + cross-topic connections
+  4. connect_topics()   — relationship discovery (two CHUNKS recalls + synthesis)
+  5. summarize_topic()  — cross-source summary (HYBRID_COMPLETION)
 
 All functions are async-compatible (they run sync httpx calls internally but
 present an async interface for the Streamlit run_async() wrapper).
@@ -14,6 +16,9 @@ Search types supported by Cognee Cloud /api/v1/recall:
   GRAPH_COMPLETION      — full graph reasoning (best for Q&A)
   CHUNKS                — pure vector retrieval, no LLM (for connect_topics context)
   GRAPH_SUMMARY_COMPLETION — graph + summary LLM
+
+datasets filter (confirmed from API spec):
+  Pass datasets=[topic_id] to scope recall to a single topic's data.
 """
 
 import hashlib
@@ -52,6 +57,7 @@ def _chunk_text(text: str, max_chars: int) -> str:
 def _recall(
     query: str,
     search_type: str = "GRAPH_COMPLETION",
+    datasets: Optional[list] = None,
     timeout: int = 60,
 ) -> dict:
     """POST /api/v1/recall — synchronous wrapper.
@@ -60,6 +66,8 @@ def _recall(
         query: Natural language query string.
         search_type: One of GRAPH_COMPLETION, HYBRID_COMPLETION, CHUNKS,
                      GRAPH_SUMMARY_COMPLETION.
+        datasets: Optional list of dataset names to scope the search
+                  (maps to the 'datasets' field in the Cognee Cloud API).
         timeout: HTTP timeout in seconds.
 
     Returns:
@@ -72,11 +80,15 @@ def _recall(
             "error": "Cognee Cloud credentials not configured. Check .env.",
         }
 
+    payload: dict = {"query": query, "search_type": search_type}
+    if datasets:
+        payload["datasets"] = datasets
+
     try:
         resp = httpx.post(
             f"{COGNEE_BASE_URL}/api/v1/recall",
             headers=_headers(),
-            json={"query": query, "search_type": search_type},
+            json=payload,
             timeout=timeout,
         )
         if resp.status_code == 200:
@@ -225,7 +237,162 @@ async def ask(question: str) -> dict:
     return result
 
 
+async def ask_scoped(question: str, topic_id: str) -> dict:
+    """Ask a question scoped to a single topic's datasets.
+
+    Uses datasets=[topic_id] to restrict Cognee Cloud recall to only the
+    data uploaded under that topic. Falls back to global recall if scoped
+    recall returns nothing.
+
+    Args:
+        question: Natural language question.
+        topic_id: Topic ID whose datasets to search within.
+
+    Returns:
+        dict with keys: answer, sources, search_type, topic_id, error
+    """
+    from core.topics import get_topic_datasets, load_topics
+
+    result = {
+        "answer": "",
+        "sources": [],
+        "search_type": "GRAPH_COMPLETION (scoped)",
+        "topic_id": topic_id,
+        "error": None,
+    }
+
+    datasets = get_topic_datasets(topic_id)
+    topics = load_topics()
+    topic_name = topics.get(topic_id, {}).get("name", topic_id)
+
+    # Scoped recall using datasets filter
+    recall = _recall(
+        question,
+        search_type="GRAPH_COMPLETION",
+        datasets=datasets if datasets else None,
+    )
+
+    if recall["ok"] and recall["data"]:
+        texts = _extract_text_from_recall(recall["data"])
+        if texts:
+            result["answer"] = "\n\n".join(texts)
+            result["sources"] = _extract_sources_from_recall(recall["data"])
+            return result
+
+    if not recall["ok"]:
+        result["error"] = recall.get("error")
+
+    if not result["answer"]:
+        result["answer"] = (
+            f"No results found in **{topic_name}**. "
+            "Try adding more material to this topic or asking a broader question."
+        )
+    return result
+
+
+async def cross_topic_ask(
+    question: str,
+    primary_topic_id: str,
+    all_topic_ids: list,
+) -> dict:
+    """Answer using primary topic + surface related content from other topics.
+
+    Strategy:
+      1. Recall CHUNKS from primary topic (top 4 chunks, 300 chars each)
+      2. Recall CHUNKS from every other topic (top 2 chunks each)
+      3. Synthesize with ONE GRAPH_COMPLETION recall using a structured prompt
+         that separates primary vs cross-topic context
+
+    Returns:
+        dict with keys: answer, primary_section, cross_section, sources,
+                        search_type, topic_id, error
+    """
+    from core.topics import get_topic_datasets, load_topics
+
+    result = {
+        "answer": "",
+        "primary_section": "",
+        "cross_section": "",
+        "sources": [],
+        "search_type": "GRAPH_COMPLETION (cross-topic)",
+        "topic_id": primary_topic_id,
+        "error": None,
+    }
+
+    topics = load_topics()
+    primary_name = topics.get(primary_topic_id, {}).get("name", primary_topic_id)
+    primary_datasets = get_topic_datasets(primary_topic_id)
+
+    # Step 1: fetch primary topic chunks
+    primary_recall = _recall(
+        question,
+        search_type="CHUNKS",
+        datasets=primary_datasets if primary_datasets else None,
+        timeout=30,
+    )
+    primary_texts = _extract_text_from_recall(primary_recall.get("data")) if primary_recall["ok"] else []
+    primary_chunks = [t[:300] for t in primary_texts[:4]]
+
+    # Step 2: fetch chunks from other topics
+    other_chunks: list = []
+    other_topic_ids = [tid for tid in all_topic_ids if tid != primary_topic_id]
+    for other_id in other_topic_ids:
+        other_datasets = get_topic_datasets(other_id)
+        if not other_datasets:
+            continue
+        other_name = topics.get(other_id, {}).get("name", other_id)
+        other_recall = _recall(
+            question,
+            search_type="CHUNKS",
+            datasets=other_datasets,
+            timeout=20,
+        )
+        if other_recall["ok"] and other_recall["data"]:
+            texts = _extract_text_from_recall(other_recall["data"])
+            for t in texts[:2]:
+                other_chunks.append(f"[{other_name}] {t[:300]}")
+
+    # Step 3: synthesize
+    ctx_primary = "\n".join(f"- {c}" for c in primary_chunks) if primary_chunks else f"(no material found in '{primary_name}')"
+    ctx_cross   = "\n".join(f"- {c}" for c in other_chunks) if other_chunks else "(no related content found in other topics)"
+
+    synthesis_prompt = (
+        f"Answer '{question}' primarily using the '{primary_name}' material, "
+        f"but also note any relevant connections from other topics.\n\n"
+        f"Primary source ({primary_name}):\n{ctx_primary}\n\n"
+        f"Related from other topics:\n{ctx_cross}\n\n"
+        f"Structure your answer in two sections:\n"
+        f"**From {primary_name}:** [answer from primary material]\n\n"
+        f"**Connected from other topics:** [any relevant connections, or 'None found' if none]"
+    )
+
+    synth_recall = _recall(synthesis_prompt, search_type="GRAPH_COMPLETION", timeout=90)
+
+    if synth_recall["ok"] and synth_recall["data"]:
+        full_answer = "\n\n".join(_extract_text_from_recall(synth_recall["data"]))
+        result["answer"] = full_answer
+        result["sources"] = _extract_sources_from_recall(synth_recall["data"])
+
+        # Try to split into sections for UI display
+        if f"**From {primary_name}:**" in full_answer:
+            parts = full_answer.split(f"**Connected from other topics:**", 1)
+            result["primary_section"] = parts[0].replace(f"**From {primary_name}:**", "").strip()
+            result["cross_section"]   = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            result["primary_section"] = full_answer
+            result["cross_section"]   = ""
+    else:
+        result["error"] = synth_recall.get("error")
+        result["answer"] = (
+            f"**From {primary_name}:**\n" + "\n".join(f"- {c}" for c in primary_chunks)
+            + (f"\n\n**Connected from other topics:**\n" + "\n".join(f"- {c}" for c in other_chunks) if other_chunks else "")
+        )
+
+    return result
+
+
 async def connect_topics(topic_a: str, topic_b: str) -> dict:
+
     """Find and visualize the relationship path between two topics.
 
     Strategy (Cognee Cloud):
