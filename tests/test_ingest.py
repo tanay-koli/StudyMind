@@ -41,30 +41,18 @@ def event_loop():
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestOllamaConnectivity:
-    """Verify Ollama is running and models are available."""
+class TestCogneeCloudConnectivity:
+    """Verify Cognee Cloud connectivity and credentials."""
 
-    def test_ollama_reachable(self):
-        """Ollama server should respond on localhost:11434."""
-        from core.config import check_ollama
+    def test_cognee_cloud_reachable(self):
+        """Cognee Cloud should respond to health check."""
+        from core.config import check_cognee_cloud
 
-        status = check_ollama(timeout=5)
+        status = check_cognee_cloud(timeout=5)
         if not status["ok"]:
-            pytest.skip(f"Ollama not available: {status.get('error')}")
+            pytest.skip(f"Cognee Cloud not available: {status.get('error')}")
 
-        assert status["ok"], f"Ollama check failed: {status.get('error')}"
-        assert len(status["missing"]) == 0, f"Missing models: {status['missing']}"
-
-    def test_ollama_has_models(self):
-        """Required models (qwen3:8b, nomic-embed-text) should be pulled."""
-        from core.config import check_ollama
-
-        status = check_ollama(timeout=5)
-        if not status["ok"]:
-            pytest.skip(f"Ollama not available: {status.get('error')}")
-
-        assert "models" in status
-        assert len(status["models"]) > 0, "No models found in Ollama"
+        assert status["ok"], f"Cognee Cloud check failed: {status.get('error')}"
 
 
 class TestTextIngestion:
