@@ -1,58 +1,10 @@
 """
-StudyMind — Smoke Tests for Ingestion
+StudyMind — Ingestion tests (offline: Cognee Cloud is mocked in conftest.py)
 
-Basic tests that verify:
-  1. Ollama is reachable
-  2. Text ingestion completes without crashing
-  3. PDF parsing works on a minimal PDF
-  4. Search returns something after ingestion
-
-These are integration tests — they require Ollama running locally.
-Run with: pytest tests/test_ingest.py -v
+Run with: pytest -v
 """
 
-import os
-import sys
-import asyncio
-import tempfile
-from pathlib import Path
-
 import pytest
-
-# Ensure project root is on path
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create a single event loop for all async tests."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-class TestCogneeCloudConnectivity:
-    """Verify Cognee Cloud connectivity and credentials."""
-
-    def test_cognee_cloud_reachable(self):
-        """Cognee Cloud should respond to health check."""
-        from core.config import check_cognee_cloud
-
-        status = check_cognee_cloud(timeout=5)
-        if not status["ok"]:
-            pytest.skip(f"Cognee Cloud not available: {status.get('error')}")
-
-        assert status["ok"], f"Cognee Cloud check failed: {status.get('error')}"
 
 
 class TestTextIngestion:
@@ -73,8 +25,36 @@ class TestTextIngestion:
         assert "title" in result
         assert "dataset_name" in result
         assert result["title"] == "Test Note"
-        # Status will be 'success' or 'error' depending on Ollama availability
-        assert result["status"] in ("success", "error")
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_ingest_text_records_source(self):
+        """A successful ingestion is stored as a source row on its topic."""
+        from core.ingest import ingest_text
+        from core.topics import create_topic, get_topic_datasets, list_sources
+
+        tid = create_topic("Transformers")["id"]
+        result = await ingest_text(text="Attention is all you need.", title="Paper", topic_id=tid)
+
+        assert result["dataset_name"] == tid
+        assert [s["id"] for s in list_sources(tid)] == [result["source_id"]]
+        assert get_topic_datasets(tid) == [tid]
+
+    @pytest.mark.asyncio
+    async def test_ingest_text_cloud_error(self, offline):
+        """A Cognee error is reported and nothing is recorded."""
+        import httpx
+        from core import config
+        from core.ingest import ingest_text
+        from core.topics import list_sources
+
+        config.set_http_client(httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom"))
+        ))
+        result = await ingest_text(text="hello", title="Note")
+        assert result["status"] == "error"
+        assert "500" in result["error"]
+        assert list_sources() == []
 
     @pytest.mark.asyncio
     async def test_ingest_empty_text_returns_error(self):

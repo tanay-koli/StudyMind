@@ -67,3 +67,8 @@ data/*.txt
 data/*.docx
 data/*.mp4
 !data/.gitkeep
+
+# ─── Runtime data (SQLite DB, uploads, generated audio) ──────────────────────
+data/studymind.db
+data/uploads/
+data/audio/

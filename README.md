@@ -24,30 +24,20 @@
 ## 🏗️ Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   Streamlit UI (app.py)                   │
-│  ┌──────────┐  ┌──────────────┐  ┌────────────────────┐  │
-│  │  Ingest   │  │   Ask (Q&A)  │  │  Connect Topics    │  │
-│  │  Tab      │  │   Tab        │  │  Tab (Hero)        │  │
-│  └────┬─────┘  └──────┬───────┘  └────────┬───────────┘  │
-│       │               │                   │               │
-├───────┼───────────────┼───────────────────┼───────────────┤
-│       ▼               ▼                   ▼               │
-│  ┌─────────┐   ┌───────────┐      ┌─────────────┐        │
-│  │ingest.py│   │ query.py  │      │graph_utils.py│        │
-│  └────┬────┘   └─────┬─────┘      └──────┬──────┘        │
-│       │              │                    │               │
-│  Local text          │                    │               │
-│  extraction          │                    │               │
-├───────┼──────────────┼────────────────────┼───────────────┤
-│       ▼              ▼                    ▼               │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              Cognee Cloud REST API                   │  │
-│  │  POST /api/v1/remember  ←  ingest text as file      │  │
-│  │  POST /api/v1/recall    ←  GRAPH_COMPLETION / CHUNKS │  │
-│  │  GET  /api/v1/datasets/ ←  health check             │  │
-│  └─────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────┐   HTTP   ┌──────────────────────────────────────────┐
+│ Streamlit UI         │ ───────▶ │ FastAPI service (api/main.py)            │
+│ ui/app.py            │          │  topics · ingest · sources · ask ·       │
+│ (thin client)        │          │  summarize · connect · study guide/audio │
+└──────────────────────┘          └───────┬───────────┬───────────┬──────────┘
+                                          │           │           │
+                              ┌───────────▼──┐ ┌──────▼─────┐ ┌───▼──────────────┐
+                              │ SQLite       │ │ LLMClient  │ │ Cognee Cloud API │
+                              │ (SQLModel)   │ │ (LiteLLM → │ │ /remember        │
+                              │ topic,source │ │  Ollama)   │ │ /recall          │
+                              └──────────────┘ └─────┬──────┘ └──────────────────┘
+                                                     │ traces (optional)
+                                                     ▼
+                                                  Langfuse
 ```
 
 ---
@@ -55,27 +45,23 @@
 ## 📁 Project Structure
 
 ```
-studymind/
+StudyMind/
 ├── .env.example           # Template — copy to .env and add your credentials
-├── .env                   # Your Cognee Cloud credentials (git-ignored, never committed)
-├── .gitignore
-├── requirements.txt       # Python dependencies
-├── README.md              # This file
-├── app.py                 # Streamlit UI — single-page app with restructured Notebook sidebar
+├── requirements.txt       # Python dependencies (new ones pinned)
+├── api/
+│   └── main.py            # FastAPI app: every feature as an HTTP endpoint
 ├── core/
-│   ├── __init__.py
-│   ├── config.py          # Loads .env, pings Cognee Cloud health endpoint
-│   ├── topics.py          # CRUD, suggestion, study guide + speech audio overview synthesis
+│   ├── config.py          # pydantic-settings, shared async HTTP client, health checks
+│   ├── db.py              # SQLModel tables: topic, source
+│   ├── llm.py             # LLMClient (LiteLLM): token/cost/latency logging, Langfuse
+│   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
 │   ├── ingest.py          # Extracts text locally, uploads scoped to topic datasets
 │   ├── query.py           # Scoped recall, cross-topic query synthesis, global Q&A
 │   └── graph_utils.py     # Parse recall results, build graphs, render pyvis HTML
-├── data/
-│   ├── topics.json        # Topic data store, color tags, and cached guides/scripts
-│   ├── audio/             # Generated Audio Overview podcast WAV files
-│   └── .gitkeep
-└── tests/
-    ├── __init__.py
-    └── test_ingest.py     # Health checks and utility smoke tests
+├── ui/
+│   └── app.py             # Streamlit UI — calls the API only
+├── data/                  # studymind.db, uploads/, audio/ (git-ignored)
+└── tests/                 # Offline: Cognee, Ollama and the LLM are mocked
 ```
 
 ---
@@ -86,18 +72,19 @@ studymind/
 
 - **Python 3.11+**
 - A **Cognee Cloud** account with an API key — sign up at [app.cognee.ai](https://app.cognee.ai)
+- **[Ollama](https://ollama.com)** for the local LLM (or set `LLM_MODEL` to a hosted model)
 
 ### Step 1: Clone & Install Dependencies
 
 ```bash
 git clone https://github.com/tanay-koli/StudyMind.git
 cd StudyMind
+python -m venv .venv && .venv/Scripts/activate   # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+ollama pull qwen2.5:7b
 ```
 
-### Step 2: Configure Cognee Cloud Credentials
-
-Copy the example env file and fill in your credentials:
+### Step 2: Configure
 
 ```bash
 cp .env.example .env
@@ -108,34 +95,38 @@ Edit `.env`:
 ```env
 COGNEE_BASE_URL=https://tenant-YOUR_TENANT_ID.aws.cognee.ai
 COGNEE_API_KEY=your_api_key_here
+LLM_MODEL=ollama/qwen2.5:7b        # or ollama/gemma3:4b, groq/..., anthropic/...
 ```
 
 > 💡 Get your `COGNEE_BASE_URL` and `COGNEE_API_KEY` from the [Cognee Cloud console](https://app.cognee.ai) under **Integrations → API / MCP → Step 1**.
+> Set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` to trace every LLM call in Langfuse.
 
 ### Step 3: Run StudyMind
 
 ```bash
-streamlit run app.py
+uvicorn api.main:app --reload      # API on http://localhost:8000 (docs at /docs)
+streamlit run ui/app.py            # UI on http://localhost:8501 (second terminal)
 ```
 
-The app opens at `http://localhost:8501`. The sidebar will show **🟢 Connected** if your credentials are valid.
+The sidebar shows **🟢 Connected** for Cognee Cloud and the LLM when both are reachable.
+On first start, an existing `data/topics.json` is imported into `data/studymind.db` (the JSON file is kept as a backup).
 
 ---
 
 ## 🧪 Running Tests
 
 ```bash
-pytest tests/ -v
+pytest -v
 ```
 
-Pure unit tests (dataset naming, graph utilities) run without any credentials. Integration tests that call Cognee Cloud will be skipped automatically if `COGNEE_API_KEY` is not set.
+All tests run offline: Cognee Cloud and Ollama are mocked with `httpx.MockTransport`, the LLM is faked, and each test gets a temporary SQLite database.
 
 ---
 
 ## 📖 Usage Guide
 
 ### 1. Create a Topic (Notebook)
-In the sidebar, expand **➕ New Topic**, enter a name (e.g. `"Transformers Course"`), and click **Create Topic**. It is assigned a color bullet and added to [data/topics.json](file:///d:/WeMakeDevs/studymind/data/topics.json).
+In the sidebar, expand **➕ New Topic**, enter a name (e.g. `"Transformers Course"`), and click **Create Topic**. It is assigned a color bullet and saved in `data/studymind.db`.
 
 ### 2. Ingest Material
 Go to the **📥 Ingest** tab, select your topic dropdown, and add content:
@@ -163,6 +154,10 @@ In the sidebar next to each topic row:
 | Layer | Technology |
 |-------|-----------|
 | UI | [Streamlit](https://streamlit.io) |
+| API | [FastAPI](https://fastapi.tiangolo.com) |
+| Storage | SQLite via [SQLModel](https://sqlmodel.tiangolo.com) |
+| LLM | [LiteLLM](https://docs.litellm.ai) → [Ollama](https://ollama.com) (Qwen 2.5 by default) |
+| Tracing | [Langfuse](https://langfuse.com) (optional) |
 | Knowledge Graph | [Cognee Cloud](https://app.cognee.ai) REST API |
 | Speech Engine (TTS) | [pyttsx3](https://pyttsx3.readthedocs.io/) |
 | PDF extraction | [PyMuPDF](https://pymupdf.readthedocs.io/) |

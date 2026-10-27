@@ -1,0 +1,104 @@
+"""StudyMind — end-to-end API flow through FastAPI's TestClient (offline)."""
+
+import fitz  # PyMuPDF
+import pytest
+from fastapi.testclient import TestClient
+
+import api.main
+from core import topics
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(api.main, "UPLOAD_DIR", tmp_path / "uploads")
+    with TestClient(api.main.app) as c:
+        yield c
+
+
+def _pdf_bytes(text: str) -> bytes:
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), text)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_health(client):
+    body = client.get("/health").json()
+    assert body["cognee"]["ok"] and body["llm"]["ok"]
+
+
+def test_full_flow(client, offline):
+    tid = client.post("/topics", json={"name": "Transformers"}).json()["id"]
+
+    ingested = client.post("/ingest/text", json={
+        "text": "Self-attention...", "title": "Lecture 1", "topic_id": tid,
+    }).json()
+    assert ingested["status"] == "success"
+
+    sources = client.get("/sources").json()
+    assert [(s["id"], s["topic_id"]) for s in sources] == [(ingested["source_id"], tid)]
+    assert client.get("/topics").json()[tid]["datasets"] == [tid]
+
+    for body in (
+        {"question": "What is attention?", "mode": "global"},
+        {"question": "What is attention?", "mode": "scoped", "topic_id": tid},
+        {"question": "What is attention?", "mode": "cross", "topic_id": tid},
+    ):
+        resp = client.post("/ask", json=body)
+        assert resp.status_code == 200
+        assert "Self-attention" in resp.json()["answer"]
+
+    guide = client.post(f"/topics/{tid}/study-guide").json()["guide"]
+    recalls = offline.count("/api/v1/recall")
+    assert client.post(f"/topics/{tid}/study-guide").json()["guide"] == guide
+    assert offline.count("/api/v1/recall") == recalls
+
+    assert client.post("/topics/suggest", json={"excerpt": "attention"}).json()["name"] == "Transformer Models"
+
+    moved = client.patch(f"/sources/{ingested['source_id']}", json={"topic_id": "general"}).json()
+    assert moved["topic_id"] == "general"
+
+    assert client.delete(f"/sources/{ingested['source_id']}").json()["status"] == "success"
+    assert client.get("/sources").json() == []
+
+
+def test_ask_validation(client):
+    assert client.post("/ask", json={"question": "q", "mode": "scoped"}).status_code == 400
+    assert client.post("/ask", json={"question": "q", "mode": "scoped", "topic_id": "nope"}).status_code == 404
+    assert client.post("/ask", json={"question": "", "mode": "global"}).status_code == 422
+    assert client.post("/ingest/text", json={"text": "x", "topic_id": "nope"}).status_code == 404
+
+
+def test_ingest_pdf_upload(client, tmp_path):
+    resp = client.post(
+        "/ingest/pdf",
+        files={"file": ("../../evil.pdf", _pdf_bytes("Gradient descent"), "application/pdf")},
+    )
+    body = resp.json()
+    assert body["status"] == "success", body
+    assert body["page_count"] == 1
+    # The crafted name is reduced to its base name inside the upload dir
+    assert (tmp_path / "uploads" / "evil.pdf").exists()
+
+
+def test_ingest_rejects_non_pdf(client):
+    resp = client.post("/ingest/pdf", files={"file": ("notes.txt", b"hi", "text/plain")})
+    assert resp.status_code == 400
+
+
+def test_summarize_and_connect(client):
+    assert "Self-attention" in client.post("/summarize", json={"topic": "attention"}).json()["summary"]
+    body = client.post("/connect", json={"topic_a": "attention", "topic_b": "RNNs"}).json()
+    assert "summary" in body and "nodes" in body
+
+
+def test_audio_unavailable_returns_503(client, monkeypatch):
+    monkeypatch.setattr(topics, "synthesize_audio", lambda tid, script: None)
+    assert client.post("/topics/general/audio").status_code == 503
+
+
+def test_delete_topic(client):
+    tid = client.post("/topics", json={"name": "Temp"}).json()["id"]
+    assert client.delete(f"/topics/{tid}").status_code == 200
+    assert client.delete("/topics/general").status_code == 400

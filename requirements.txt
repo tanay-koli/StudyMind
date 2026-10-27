@@ -3,10 +3,25 @@ httpx>=0.27.0
 python-dotenv>=1.0.0
 streamlit>=1.40.0
 
+# API + storage + settings
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+sqlmodel==0.0.48
+pydantic-settings==2.16.1
+
+# LLM (any provider via LiteLLM; Ollama by default) + Langfuse tracing over OTEL
+litellm==1.106.4
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+
 # Local text extraction (unchanged)
 PyMuPDF>=1.25.0
 youtube-transcript-api>=0.6.0
 trafilatura>=2.0.0
+
+# Audio overview
+pyttsx3==2.99
 
 # Graph visualization (unchanged)
 pyvis>=0.3.2
