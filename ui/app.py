@@ -2,68 +2,50 @@
 StudyMind — Personal Study Assistant
 =====================================
 Streamlit single-page app with 3 tabs: Ingest, Ask, Connect Topics.
-Powered by Cognee (knowledge graph) + Ollama (local LLM).
+A thin client: every action is an HTTP call to the StudyMind API.
 
-Run with:  streamlit run app.py
+Run with:  uvicorn api.main:app   (in one terminal)
+           streamlit run ui/app.py (in another)
 """
 
-import os
 import sys
-import asyncio
-import tempfile
 from pathlib import Path
-from datetime import datetime
 
+import httpx
 import streamlit as st
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so `core.*` imports work
 # ---------------------------------------------------------------------------
-_PROJECT_ROOT = Path(__file__).resolve().parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core.config import check_cognee_cloud, get_cloud_status_emoji, DATA_DIR
-from core.ingest import (
-    ingest_pdf,
-    ingest_youtube,
-    ingest_url,
-    ingest_text,
-    forget_source,
-    forget_all,
-)
-from core.query import ask, connect_topics, summarize_topic, ask_scoped, cross_topic_ask
-from core.topics import (
-    load_topics,
-    create_topic,
-    delete_topic,
-    add_dataset_to_topic,
-    get_topic_datasets,
-    suggest_topic_name,
-    generate_study_guide,
-    generate_audio_script,
-    synthesize_audio,
-    GENERAL_TOPIC_ID,
-)
+from core.config import settings, get_cloud_status_emoji
+
 
 # ---------------------------------------------------------------------------
-# Async helper — Streamlit runs synchronously; wrap async calls safely
+# API helpers
 # ---------------------------------------------------------------------------
 
-def run_async(coro):
-    """Run an async coroutine from synchronous Streamlit code safely.
-    
-    Avoids using `asyncio.run()` because Cognee spawns background tasks 
-    (telemetry, db pools) that cause asyncio.run's cleanup phase to deadlock 
-    Streamlit threads.
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def api(method: str, path: str, **kwargs):
+    """Call the StudyMind API and return its JSON; show the error and stop on failure."""
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        # Intentionally avoiding loop.close() to prevent teardown hangs
-        pass
+        resp = httpx.request(method, f"{settings.api_url}{path}", timeout=300, **kwargs)
+    except httpx.TransportError:
+        st.error(
+            f"Cannot reach the StudyMind API at {settings.api_url}. "
+            "Start it with: uvicorn api.main:app"
+        )
+        st.stop()
+    if resp.status_code >= 400:
+        st.error(f"API error {resp.status_code}: {resp.text[:300]}")
+        st.stop()
+    return resp.json()
+
+
+def suggest(excerpt: str) -> str:
+    return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
 
 # ---------------------------------------------------------------------------
@@ -218,14 +200,11 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # Session state initialization
 # ---------------------------------------------------------------------------
-if "sources" not in st.session_state:
-    st.session_state.sources = []  # List of ingestion result dicts
-
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []  # List of {role, content} dicts
 
-if "cloud_status" not in st.session_state:
-    st.session_state.cloud_status = check_cognee_cloud(timeout=5)
+if "health" not in st.session_state:
+    st.session_state.health = api("GET", "/health")
 
 if "selected_topic" not in st.session_state:
     st.session_state.selected_topic = "all_topics"
@@ -263,22 +242,24 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Cognee Cloud status
-    status = st.session_state.cloud_status
-    status_emoji = get_cloud_status_emoji(status)
-    st.markdown(f"**Cognee Cloud:** {status_emoji}")
-
-    if not status["ok"] and status.get("error"):
-        st.error(status["error"], icon="⚠️")
+    # Cognee Cloud + LLM status
+    for label, status in (
+        ("Cognee Cloud", st.session_state.health["cognee"]),
+        (f"LLM ({settings.llm_model})", st.session_state.health["llm"]),
+    ):
+        st.markdown(f"**{label}:** {get_cloud_status_emoji(status)}")
+        if not status["ok"] and status.get("error"):
+            st.error(status["error"], icon="⚠️")
 
     if st.button("🔄 Refresh Status", use_container_width=True):
-        st.session_state.cloud_status = check_cognee_cloud(timeout=5)
+        st.session_state.health = api("GET", "/health")
         st.rerun()
 
     st.markdown("---")
 
-    # Load topics
-    topics = load_topics()
+    # Load topics and sources
+    topics = api("GET", "/topics")
+    sources = api("GET", "/sources")
 
     # Topics Section
     st.markdown("### 📚 Topics (Notebooks)")
@@ -296,11 +277,7 @@ with st.sidebar:
 
     # List each topic with color dot and options
     for tid, topic in topics.items():
-        topic_sources = [
-            s for s in st.session_state.sources
-            if s.get("topic_id") == tid or s.get("dataset_name") in topic.get("datasets", [])
-        ]
-        count = len(topic_sources)
+        count = sum(1 for s in sources if s["topic_id"] == tid)
         is_selected = st.session_state.selected_topic == tid
 
         col_dot, col_name, col_sg, col_aud = st.columns([0.15, 0.55, 0.15, 0.15])
@@ -331,7 +308,7 @@ with st.sidebar:
         new_topic_name = st.text_input("Topic Name", key="sidebar_new_topic_input")
         if st.button("Create Topic", key="btn_create_topic", use_container_width=True):
             if new_topic_name.strip():
-                new_t = create_topic(new_topic_name)
+                new_t = api("POST", "/topics", json={"name": new_topic_name})
                 st.session_state.selected_topic = new_t["id"]
                 st.success(f"Topic '{new_topic_name}' created!")
                 st.rerun()
@@ -349,7 +326,7 @@ with st.sidebar:
                     st.rerun()
 
                 with st.spinner("Generating study guide..."):
-                    guide_content = generate_study_guide(sg_tid)
+                    guide_content = api("POST", f"/topics/{sg_tid}/study-guide")["guide"]
 
                 st.markdown(guide_content)
 
@@ -376,15 +353,14 @@ with st.sidebar:
                     st.rerun()
 
                 with st.spinner("Generating audio script..."):
-                    script_content = generate_audio_script(aud_tid)
+                    script_content = api("POST", f"/topics/{aud_tid}/audio-script")["script"]
 
-                # Synthesize
+                # Synthesize (503 when pyttsx3 is unavailable)
                 with st.spinner("Synthesizing audio file..."):
-                    audio_path = synthesize_audio(aud_tid, script_content)
+                    audio_resp = httpx.post(f"{settings.api_url}/topics/{aud_tid}/audio", timeout=300)
 
-                if audio_path and os.path.exists(audio_path):
-                    with open(audio_path, "rb") as f:
-                        st.audio(f.read(), format="audio/wav")
+                if audio_resp.status_code == 200:
+                    st.audio(audio_resp.content, format="audio/wav")
                 else:
                     st.info("Install pyttsx3 for audio playback. Displaying script text only.")
 
@@ -398,19 +374,14 @@ with st.sidebar:
 
     # Filter sources list by active topic
     active_tid = st.session_state.selected_topic
-    sources = st.session_state.sources
-    successful_sources = [s for s in sources if s.get("status") == "success"]
 
     if active_tid != "all_topics":
         active_topic_name = topics.get(active_tid, {}).get("name", active_tid)
         st.caption(f"Showing sources in **{active_topic_name}**")
-        filtered_sources = [
-            s for s in successful_sources
-            if s.get("topic_id") == active_tid or s.get("dataset_name") in topics.get(active_tid, {}).get("datasets", [])
-        ]
+        filtered_sources = [s for s in sources if s["topic_id"] == active_tid]
     else:
         st.caption("Showing all ingested sources")
-        filtered_sources = successful_sources
+        filtered_sources = sources
 
     if filtered_sources:
         for i, source in enumerate(filtered_sources):
@@ -424,47 +395,23 @@ with st.sidebar:
                 <div class="source-card">
                     <div class="source-type">{icon} {source.get('source_type', 'unknown').upper()}</div>
                     <div class="source-title">{source.get('title', 'Untitled')[:50]}</div>
-                    <div class="source-time">{source.get('timestamp', '')[:16]}</div>
+                    <div class="source-time">{source.get('created_at', '')[:16]}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
             with col2:
                 if st.button("🗑️", key=f"forget_{active_tid}_{i}", help="Remove this source"):
                     with st.spinner("Removing..."):
-                        result = run_async(forget_source(source["dataset_name"]))
-                    if result["status"] == "success":
-                        st.session_state.sources = [
-                            s for s in st.session_state.sources
-                            if s.get("dataset_name") != source["dataset_name"]
-                        ]
-                        # Remove from topic lists
-                        for tid in topics:
-                            if source["dataset_name"] in topics[tid].get("datasets", []):
-                                topics[tid]["datasets"].remove(source["dataset_name"])
-                                topics[tid]["study_guide"] = None
-                                topics[tid]["audio_script"] = None
-                        save_topics(topics)
-                        st.rerun()
-                    else:
-                        st.error(result.get("error", "Failed to forget"))
+                        api("DELETE", f"/sources/{source['id']}")
+                    st.rerun()
 
         if active_tid == "all_topics":
             st.markdown("---")
             if st.button("🗑️ Forget Everything", use_container_width=True, type="secondary"):
                 with st.spinner("Clearing all knowledge..."):
-                    result = run_async(forget_all())
-                if result["status"] == "success":
-                    st.session_state.sources = []
-                    st.session_state.chat_history = []
-                    # Reset datasets lists in all topics
-                    for tid in topics:
-                        topics[tid]["datasets"] = []
-                        topics[tid]["study_guide"] = None
-                        topics[tid]["audio_script"] = None
-                    save_topics(topics)
-                    st.rerun()
-                else:
-                    st.error(result.get("error", "Failed"))
+                    api("DELETE", "/sources")
+                st.session_state.chat_history = []
+                st.rerun()
     else:
         st.caption("No sources in this topic.")
         st.markdown(
@@ -507,25 +454,12 @@ with tab_ingest:
         col_yes, col_no = st.columns(2)
         with col_yes:
             if st.button("Add to suggested Topic", key="accept_suggestion", use_container_width=True, type="primary"):
-                # Find or create the topic
-                current_topics = load_topics()
-                target_tid = None
-                for tid, t in current_topics.items():
-                    if t["name"].lower() == sug["name"].lower():
-                        target_tid = tid
-                        break
-                if not target_tid:
-                    new_t = create_topic(sug["name"])
-                    target_tid = new_t["id"]
-                
-                # Re-associate dataset with this topic in topics.json
-                add_dataset_to_topic(target_tid, sug["source_dataset"])
-                
-                # Update source dict in session state
-                for src in st.session_state.sources:
-                    if src.get("dataset_name") == sug["source_dataset"]:
-                        src["topic_id"] = target_tid
-                
+                # Find or create the topic (the API returns an existing one by name)
+                target_tid = api("POST", "/topics", json={"name": sug["name"]})["id"]
+
+                # Re-associate the source with this topic
+                api("PATCH", f"/sources/{sug['source_id']}", json={"topic_id": target_tid})
+
                 st.session_state.suggested_topic = None
                 st.session_state.selected_topic = target_tid
                 st.success(f"Successfully added to topic '{sug['name']}'!")
@@ -536,7 +470,7 @@ with tab_ingest:
                 st.rerun()
 
     # 2. Topic Selector for Ingestion
-    current_topics = load_topics()
+    current_topics = topics
     topic_options = {t["name"]: tid for tid, t in current_topics.items()}
     topic_list = list(topic_options.keys()) + ["➕ New Topic..."]
 
@@ -569,7 +503,7 @@ with tab_ingest:
                 ingest_topic_id = found_tid
             else:
                 if st.button("Confirm and Create Topic", key="btn_confirm_create_topic"):
-                    new_t = create_topic(new_t_name)
+                    new_t = api("POST", "/topics", json={"name": new_t_name})
                     ingest_topic_id = new_t["id"]
                     st.session_state.selected_topic = ingest_topic_id
                     st.success(f"Topic '{new_t_name}' created!")
@@ -592,27 +526,31 @@ with tab_ingest:
         )
         if uploaded_file is not None:
             if st.button("📄 Ingest PDF", key="btn_ingest_pdf", use_container_width=True):
-                save_path = DATA_DIR / uploaded_file.name
-                with open(save_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+                form = {"title": uploaded_file.name}
+                if ingest_topic_id:
+                    form["topic_id"] = ingest_topic_id
 
                 with st.spinner("📄 Extracting text & uploading to Cognee Cloud..."):
-                    result = run_async(ingest_pdf(str(save_path), title=uploaded_file.name, topic_id=ingest_topic_id))
+                    result = api(
+                        "POST",
+                        "/ingest/pdf",
+                        files={"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")},
+                        data=form,
+                    )
 
                 if result["status"] == "success":
-                    st.session_state.sources.append(result)
                     st.success(
                         f"✅ Ingested **{result['title']}** "
                         f"({result.get('page_count', '?')} pages)",
                         icon="📄",
                     )
                     # Trigger AI topic suggestion
-                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    sug = suggest(result["excerpt"])
                     if sug:
                         st.toast(f"💡 Suggested topic: {sug}")
                         st.session_state.suggested_topic = {
                             "name": sug,
-                            "source_dataset": result["dataset_name"],
+                            "source_id": result["source_id"],
                             "source_title": result["title"]
                         }
                     st.rerun()
@@ -632,18 +570,17 @@ with tab_ingest:
         if yt_url:
             if st.button("🎥 Ingest YouTube", key="btn_ingest_yt", use_container_width=True):
                 with st.spinner("🎥 Fetching transcript & uploading to Cognee Cloud..."):
-                    result = run_async(ingest_youtube(yt_url, topic_id=ingest_topic_id))
+                    result = api("POST", "/ingest/youtube", json={"url": yt_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
-                    st.session_state.sources.append(result)
                     st.success(f"✅ Ingested **{result['title']}**", icon="🎥")
                     # Trigger AI topic suggestion
-                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    sug = suggest(result["excerpt"])
                     if sug:
                         st.toast(f"💡 Suggested topic: {sug}")
                         st.session_state.suggested_topic = {
                             "name": sug,
-                            "source_dataset": result["dataset_name"],
+                            "source_id": result["source_id"],
                             "source_title": result["title"]
                         }
                     st.rerun()
@@ -662,18 +599,17 @@ with tab_ingest:
         if web_url:
             if st.button("🌐 Ingest Article", key="btn_ingest_web", use_container_width=True):
                 with st.spinner("🌐 Extracting article & uploading to Cognee Cloud..."):
-                    result = run_async(ingest_url(web_url, topic_id=ingest_topic_id))
+                    result = api("POST", "/ingest/url", json={"url": web_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
-                    st.session_state.sources.append(result)
                     st.success(f"✅ Ingested **{result['title'][:60]}**", icon="🌐")
                     # Trigger AI topic suggestion
-                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    sug = suggest(result["excerpt"])
                     if sug:
                         st.toast(f"💡 Suggested topic: {sug}")
                         st.session_state.suggested_topic = {
                             "name": sug,
-                            "source_dataset": result["dataset_name"],
+                            "source_id": result["source_id"],
                             "source_title": result["title"]
                         }
                     st.rerun()
@@ -698,20 +634,21 @@ with tab_ingest:
         if note_text:
             if st.button("📝 Ingest Notes", key="btn_ingest_note", use_container_width=True):
                 with st.spinner("📝 Processing notes & uploading to Cognee Cloud..."):
-                    result = run_async(
-                        ingest_text(note_text, title=note_title or "Untitled Note", topic_id=ingest_topic_id)
-                    )
+                    result = api("POST", "/ingest/text", json={
+                        "text": note_text,
+                        "title": note_title or "Untitled Note",
+                        "topic_id": ingest_topic_id,
+                    })
 
                 if result["status"] == "success":
-                    st.session_state.sources.append(result)
                     st.success(f"✅ Ingested **{result['title']}**", icon="📝")
                     # Trigger AI topic suggestion
-                    sug = suggest_topic_name(result["excerpt"], [t["name"] for t in current_topics.values()])
+                    sug = suggest(result["excerpt"])
                     if sug:
                         st.toast(f"💡 Suggested topic: {sug}")
                         st.session_state.suggested_topic = {
                             "name": sug,
-                            "source_dataset": result["dataset_name"],
+                            "source_id": result["source_id"],
                             "source_title": result["title"]
                         }
                     st.rerun()
@@ -725,11 +662,10 @@ with tab_ask:
     st.caption("Ask questions and get answers synthesized across all your ingested sources.")
 
     # Check if we have sources
-    if not [s for s in st.session_state.sources if s.get("status") == "success"]:
+    if not sources:
         st.info("📚 Ingest some study material first using the **Ingest** tab.", icon="💡")
     else:
-        # Load topics
-        current_topics = load_topics()
+        current_topics = topics
         ask_options = {"All Topics": "all_topics"}
         for tid, t in current_topics.items():
             ask_options[t["name"]] = tid
@@ -790,11 +726,11 @@ with tab_ask:
             with st.chat_message("assistant"):
                 with st.spinner("🤔 Querying Cognee Cloud knowledge graph..."):
                     if selected_ask_tid == "all_topics":
-                        result = run_async(ask(question))
-                    elif enable_cross:
-                        result = run_async(cross_topic_ask(question, selected_ask_tid, list(current_topics.keys())))
+                        body = {"question": question, "mode": "global"}
                     else:
-                        result = run_async(ask_scoped(question, selected_ask_tid))
+                        mode = "cross" if enable_cross else "scoped"
+                        body = {"question": question, "mode": mode, "topic_id": selected_ask_tid}
+                    result = api("POST", "/ask", json=body)
 
                 if result.get("error"):
                     st.error(result["error"])
@@ -849,7 +785,7 @@ with tab_ask:
         if summary_topic:
             if st.button("📋 Generate Summary", key="btn_summarize", use_container_width=True):
                 with st.spinner(f"📋 Summarizing '{summary_topic}' via Cognee Cloud..."):
-                    result = run_async(summarize_topic(summary_topic))
+                    result = api("POST", "/summarize", json={"topic": summary_topic})
 
                 if result.get("error"):
                     st.error(result["error"])
@@ -870,7 +806,7 @@ with tab_connect:
     )
 
     # Check if we have sources
-    if not [s for s in st.session_state.sources if s.get("status") == "success"]:
+    if not sources:
         st.info("📚 Ingest some study material first using the **Ingest** tab.", icon="💡")
     else:
         col_a, col_mid, col_b = st.columns([2, 1, 2])
@@ -905,7 +841,7 @@ with tab_connect:
                 type="primary",
             ):
                 with st.spinner(f"🔗 Finding connections between '{topic_a}' and '{topic_b}' via Cognee Cloud..."):
-                    result = run_async(connect_topics(topic_a, topic_b))
+                    result = api("POST", "/connect", json={"topic_a": topic_a, "topic_b": topic_b})
 
                 if result.get("error"):
                     st.error(result["error"])

@@ -8,8 +8,7 @@ Five core query functions that use the Cognee Cloud REST API:
   4. connect_topics()   — relationship discovery (two CHUNKS recalls + synthesis)
   5. summarize_topic()  — cross-source summary (HYBRID_COMPLETION)
 
-All functions are async-compatible (they run sync httpx calls internally but
-present an async interface for the Streamlit run_async() wrapper).
+All functions are async and share one httpx.AsyncClient (core.config.http_client).
 
 Search types supported by Cognee Cloud /api/v1/recall:
   HYBRID_COMPLETION     — vector + graph blend (fast, default for summaries)
@@ -21,13 +20,14 @@ datasets filter (confirmed from API spec):
   Pass datasets=[topic_id] to scope recall to a single topic's data.
 """
 
+import asyncio
 import hashlib
 import re
 from typing import Optional
 
 import httpx
 
-from core.config import COGNEE_BASE_URL, COGNEE_API_KEY, _headers
+from core.config import settings, _headers, http_client
 from core.graph_utils import (
     parse_search_results,
     build_connection_graph,
@@ -54,13 +54,13 @@ def _chunk_text(text: str, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "..."
 
 
-def _recall(
+async def _recall(
     query: str,
     search_type: str = "GRAPH_COMPLETION",
     datasets: Optional[list] = None,
     timeout: int = 60,
 ) -> dict:
-    """POST /api/v1/recall — synchronous wrapper.
+    """POST /api/v1/recall.
 
     Args:
         query: Natural language query string.
@@ -73,7 +73,7 @@ def _recall(
     Returns:
         dict with keys: ok (bool), data (any), error (str|None)
     """
-    if not COGNEE_BASE_URL or not COGNEE_API_KEY:
+    if not settings.cognee_base_url or not settings.cognee_api_key:
         return {
             "ok": False,
             "data": None,
@@ -85,8 +85,8 @@ def _recall(
         payload["datasets"] = datasets
 
     try:
-        resp = httpx.post(
-            f"{COGNEE_BASE_URL}/api/v1/recall",
+        resp = await http_client().post(
+            f"{settings.cognee_base_url}/api/v1/recall",
             headers=_headers(),
             json=payload,
             timeout=timeout,
@@ -108,7 +108,7 @@ def _recall(
             "ok": False,
             "data": None,
             "error": (
-                f"Cannot reach Cognee Cloud at {COGNEE_BASE_URL}. "
+                f"Cannot reach Cognee Cloud at {settings.cognee_base_url}. "
                 "Check your internet connection."
             ),
         }
@@ -208,7 +208,7 @@ async def ask(question: str) -> dict:
     }
 
     # Primary: GRAPH_COMPLETION
-    recall = _recall(question, search_type="GRAPH_COMPLETION")
+    recall = await _recall(question, search_type="GRAPH_COMPLETION")
     if recall["ok"] and recall["data"]:
         texts = _extract_text_from_recall(recall["data"])
         sources = _extract_sources_from_recall(recall["data"])
@@ -219,7 +219,7 @@ async def ask(question: str) -> dict:
 
     if not recall["ok"]:
         # Fallback: HYBRID_COMPLETION
-        recall2 = _recall(question, search_type="HYBRID_COMPLETION")
+        recall2 = await _recall(question, search_type="HYBRID_COMPLETION")
         result["search_type"] = "HYBRID_COMPLETION (fallback)"
         if recall2["ok"] and recall2["data"]:
             texts = _extract_text_from_recall(recall2["data"])
@@ -266,7 +266,7 @@ async def ask_scoped(question: str, topic_id: str) -> dict:
     topic_name = topics.get(topic_id, {}).get("name", topic_id)
 
     # Scoped recall using datasets filter
-    recall = _recall(
+    recall = await _recall(
         question,
         search_type="GRAPH_COMPLETION",
         datasets=datasets if datasets else None,
@@ -324,7 +324,7 @@ async def cross_topic_ask(
     primary_datasets = get_topic_datasets(primary_topic_id)
 
     # Step 1: fetch primary topic chunks
-    primary_recall = _recall(
+    primary_recall = await _recall(
         question,
         search_type="CHUNKS",
         datasets=primary_datasets if primary_datasets else None,
@@ -335,18 +335,16 @@ async def cross_topic_ask(
 
     # Step 2: fetch chunks from other topics
     other_chunks: list = []
-    other_topic_ids = [tid for tid in all_topic_ids if tid != primary_topic_id]
-    for other_id in other_topic_ids:
-        other_datasets = get_topic_datasets(other_id)
-        if not other_datasets:
-            continue
+    other_ids = [
+        tid for tid in all_topic_ids
+        if tid != primary_topic_id and get_topic_datasets(tid)
+    ]
+    other_recalls = await asyncio.gather(*(
+        _recall(question, search_type="CHUNKS", datasets=get_topic_datasets(tid), timeout=20)
+        for tid in other_ids
+    ))
+    for other_id, other_recall in zip(other_ids, other_recalls):
         other_name = topics.get(other_id, {}).get("name", other_id)
-        other_recall = _recall(
-            question,
-            search_type="CHUNKS",
-            datasets=other_datasets,
-            timeout=20,
-        )
         if other_recall["ok"] and other_recall["data"]:
             texts = _extract_text_from_recall(other_recall["data"])
             for t in texts[:2]:
@@ -366,7 +364,7 @@ async def cross_topic_ask(
         f"**Connected from other topics:** [any relevant connections, or 'None found' if none]"
     )
 
-    synth_recall = _recall(synthesis_prompt, search_type="GRAPH_COMPLETION", timeout=90)
+    synth_recall = await _recall(synthesis_prompt, search_type="GRAPH_COMPLETION", timeout=90)
 
     if synth_recall["ok"] and synth_recall["data"]:
         full_answer = "\n\n".join(_extract_text_from_recall(synth_recall["data"]))
@@ -416,7 +414,7 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
 
     # Option A: CHUNKS retrieval → entity overlap
     try:
-        nodes, edges, summary = _connect_via_chunks(topic_a, topic_b)
+        nodes, edges, summary = await _connect_via_chunks(topic_a, topic_b)
         if nodes and edges:
             result["nodes"] = nodes
             result["edges"] = edges
@@ -429,7 +427,7 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
 
     # Option B: GRAPH_COMPLETION for the combined query
     try:
-        nodes, edges, summary = _connect_via_graph_completion(topic_a, topic_b)
+        nodes, edges, summary = await _connect_via_graph_completion(topic_a, topic_b)
         if nodes and edges:
             result["nodes"] = nodes
             result["edges"] = edges
@@ -466,10 +464,10 @@ async def summarize_topic(topic: str) -> dict:
         "error": None,
     }
 
-    recall = _recall(topic, search_type="HYBRID_COMPLETION")
+    recall = await _recall(topic, search_type="HYBRID_COMPLETION")
     if not recall["ok"]:
         # Fallback to CHUNKS
-        recall = _recall(topic, search_type="CHUNKS")
+        recall = await _recall(topic, search_type="CHUNKS")
 
     if not recall["ok"]:
         result["error"] = recall.get("error")
@@ -499,13 +497,15 @@ async def summarize_topic(topic: str) -> dict:
 # Option A internals — CHUNKS overlap
 # ---------------------------------------------------------------------------
 
-def _connect_via_chunks(topic_a: str, topic_b: str) -> tuple:
+async def _connect_via_chunks(topic_a: str, topic_b: str) -> tuple:
     """Retrieve CHUNKS for each topic and find overlapping entities.
 
     Returns (nodes, edges, summary). Returns ([], [], '') if no overlap.
     """
-    raw_a = _recall(topic_a, search_type="CHUNKS", timeout=30)
-    raw_b = _recall(topic_b, search_type="CHUNKS", timeout=30)
+    raw_a, raw_b = await asyncio.gather(
+        _recall(topic_a, search_type="CHUNKS", timeout=30),
+        _recall(topic_b, search_type="CHUNKS", timeout=30),
+    )
 
     texts_a = _extract_text_from_recall(raw_a.get("data")) if raw_a["ok"] else []
     texts_b = _extract_text_from_recall(raw_b.get("data")) if raw_b["ok"] else []
@@ -626,7 +626,7 @@ def _parse_concept_lines(text: str, topic_a: str, topic_b: str) -> tuple:
     return nodes, edges
 
 
-def _connect_via_graph_completion(topic_a: str, topic_b: str) -> tuple:
+async def _connect_via_graph_completion(topic_a: str, topic_b: str) -> tuple:
     """Option B: single GRAPH_COMPLETION recall combining both topics.
 
     Returns (nodes, edges, summary_text). Returns ([], [], '') if empty output.
@@ -636,7 +636,7 @@ def _connect_via_graph_completion(topic_a: str, topic_b: str) -> tuple:
         f"List the key concepts that connect them."
     )
 
-    recall = _recall(combined_query, search_type="GRAPH_COMPLETION", timeout=60)
+    recall = await _recall(combined_query, search_type="GRAPH_COMPLETION", timeout=60)
     if not recall["ok"]:
         return [], [], ""
 
