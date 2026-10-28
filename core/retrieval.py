@@ -7,6 +7,7 @@ One collection per embedding model, so models can be compared.
 """
 
 import asyncio
+import threading
 import warnings
 from dataclasses import dataclass
 from functools import lru_cache
@@ -80,24 +81,29 @@ def rerank(query: str, texts: list[str]) -> list[float]:
 # ---------------------------------------------------------------------------
 
 _client: QdrantClient | None = None
+# Embedded Qdrant has no internal locking, and ingest, delete and ask call it from
+# worker threads; every Qdrant call goes through this lock (embedding stays outside).
+_lock = threading.RLock()
 
 
 def store() -> QdrantClient:
     global _client
-    if _client is None:
-        if settings.qdrant_path == ":memory:":
-            _client = QdrantClient(location=":memory:")
-        else:
-            _client = QdrantClient(path=settings.qdrant_path)
-    return _client
+    with _lock:
+        if _client is None:
+            if settings.qdrant_path == ":memory:":
+                _client = QdrantClient(location=":memory:")
+            else:
+                _client = QdrantClient(path=settings.qdrant_path)
+        return _client
 
 
 def reset_store() -> None:
     """Drop the cached client so the next call uses settings.qdrant_path again."""
     global _client
-    if _client is not None:
-        _client.close()
-    _client = None
+    with _lock:
+        if _client is not None:
+            _client.close()
+        _client = None
 
 
 def collection_name() -> str:
@@ -105,13 +111,16 @@ def collection_name() -> str:
 
 
 def _chunk_collections() -> list[str]:
-    return [c.name for c in store().get_collections().collections if c.name.startswith(COLLECTION_PREFIX)]
+    with _lock:
+        return [c.name for c in store().get_collections().collections if c.name.startswith(COLLECTION_PREFIX)]
 
 
 def _ensure_collection() -> str:
     name = collection_name()
     client = store()
-    if not client.collection_exists(name):
+    with _lock:
+        if client.collection_exists(name):
+            return name
         dim = EMBED_MODELS[settings.embed_model][1]
         client.create_collection(
             name,
@@ -133,14 +142,16 @@ def _upsert(chunks: list[Chunk]) -> None:
         texts = [c.text for c in batch]
         dense = embed_dense(texts, query=False)
         sparse = embed_sparse(texts, query=False)
-        store().upsert(name, [
+        points = [
             models.PointStruct(
                 id=c.id,
                 vector={"dense": d, "bm25": sp},
                 payload={"source_id": c.source_id, "topic_id": c.topic_id},
             )
             for c, d, sp in zip(batch, dense, sparse)
-        ])
+        ]
+        with _lock:
+            store().upsert(name, points)
 
 
 def index_chunks(source_id: int, topic_id: str, blocks: list[Block]) -> int:
@@ -180,13 +191,15 @@ def delete_source_points(source_ids: list[int]) -> None:
     """Remove the sources' points from every model's collection."""
     if not source_ids:
         return
-    for name in _chunk_collections():
-        store().delete(name, points_selector=_source_filter(source_ids))
+    with _lock:
+        for name in _chunk_collections():
+            store().delete(name, points_selector=_source_filter(source_ids))
 
 
 def move_source_points(source_id: int, topic_id: str) -> None:
-    for name in _chunk_collections():
-        store().set_payload(name, payload={"topic_id": topic_id}, points=_source_filter([source_id]))
+    with _lock:
+        for name in _chunk_collections():
+            store().set_payload(name, payload={"topic_id": topic_id}, points=_source_filter([source_id]))
 
 
 # ---------------------------------------------------------------------------
@@ -226,20 +239,23 @@ class HybridRetriever:
     def _search(self, query: str, topic_id: Optional[str], k: int) -> list[Hit]:
         name = collection_name()
         client = store()
-        if not client.collection_exists(name):
-            return []
+        with _lock:
+            if not client.collection_exists(name):
+                return []
         flt = None
         if topic_id:
             flt = models.Filter(must=[models.FieldCondition(key="topic_id", match=models.MatchValue(value=topic_id))])
 
-        def ids(vector, using: str) -> list[int]:
-            points = client.query_points(name, query=vector, using=using, query_filter=flt, limit=CANDIDATES).points
-            return [p.id for p in points]
-
-        fused = rrf([
-            ids(embed_dense([query], query=True)[0], "dense"),
-            ids(embed_sparse([query], query=True)[0], "bm25"),
-        ])[:CANDIDATES]
+        dense = embed_dense([query], query=True)[0]
+        sparse = embed_sparse([query], query=True)[0]
+        with _lock:
+            rankings = [
+                [p.id for p in client.query_points(
+                    name, query=vector, using=using, query_filter=flt, limit=CANDIDATES,
+                ).points]
+                for vector, using in ((dense, "dense"), (sparse, "bm25"))
+            ]
+        fused = rrf(rankings)[:CANDIDATES]
         if not fused:
             return []
 
