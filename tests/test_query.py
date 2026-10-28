@@ -32,11 +32,15 @@ def fake(monkeypatch):
 
     async def complete(prompt, system=None, **kw):
         state["prompts"].append(prompt)
-        if isinstance(state["reply"], Exception):
-            raise state["reply"]
-        return state["reply"]
+        reply = state["reply"]
+        if isinstance(reply, list):  # consumed in order, one per LLM call
+            reply = reply.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
     monkeypatch.setattr(llm, "complete", complete)
+    monkeypatch.setattr(query, "_topics_with_chunks", lambda ids: set(ids))
 
     def install(hits_by_topic, reply="ok"):
         r = FakeRetriever(hits_by_topic)
@@ -56,7 +60,7 @@ async def test_cross_topic_retrieves_with_question_per_topic(fake):
     )
     res = await query.cross_topic_ask("how do things go downhill?", "ml", ["ml", "bio"])
     assert r.calls == [("how do things go downhill?", "ml", 6), ("how do things go downhill?", "bio", 2)]
-    assert len(prompts) == 1 and "gradient descent steps downhill" in prompts[0] and "enzymes" in prompts[0]
+    assert len(prompts) == 2 and "gradient descent steps downhill" in prompts[-1] and "enzymes" in prompts[-1]
     assert (res["primary_section"], res["cross_section"]) == ("steps downhill [1]", "enzymes [2]")
     assert [c["source_title"] for c in res["citations"]] == ["Notes", "Bio"]
     assert res["error"] is None
@@ -64,7 +68,7 @@ async def test_cross_topic_retrieves_with_question_per_topic(fake):
 
 @pytest.mark.asyncio
 async def test_cross_topic_without_other_topics(fake):
-    r, _ = fake({"ml": [_hit("Notes", "gradient descent", 1)]}, reply="An answer [1]")
+    r, _ = fake({"ml": [_hit("Notes", "gradient descent", 1)]}, reply=["x", "An answer [1]"])
     res = await query.cross_topic_ask("q", "ml", ["ml"])
     assert r.calls == [("q", "ml", 6)]
     assert res["primary_section"] == "An answer [1]" and res["cross_section"] == ""
@@ -74,7 +78,7 @@ async def test_cross_topic_without_other_topics(fake):
 async def test_cross_topic_no_material_skips_llm(fake):
     _, prompts = fake({})
     res = await query.cross_topic_ask("q", "ml", ["ml", "bio"])
-    assert prompts == [] and "No results found" in res["answer"]
+    assert len(prompts) == 1 and "No results found" in res["answer"]  # decomposition only
 
 
 @pytest.mark.asyncio
@@ -148,7 +152,7 @@ def test_concept_parser_handles_numbered_and_bold_lines():
     "From ml: steps downhill [1]\n\nConnected from other topics: enzymes [2]",
 ])
 async def test_cross_topic_split_tolerates_heading_styles(fake, reply):
-    fake({"ml": [_hit("Notes", "gradient descent", 1)], "bio": [_hit("Bio", "enzymes", 2)]}, reply=reply)
+    fake({"ml": [_hit("Notes", "gradient descent", 1)], "bio": [_hit("Bio", "enzymes", 2)]}, reply=["x", reply])
     res = await query.cross_topic_ask("q", "ml", ["ml", "bio"])
     assert (res["primary_section"], res["cross_section"]) == ("steps downhill [1]", "enzymes [2]")
 
@@ -161,3 +165,45 @@ async def test_connect_llm_can_decline(fake):
     res = await query.connect_topics("optimisation", "medieval poetry")
     assert res["connection_method"] == "none" and res["nodes"] == []
     assert "NONE" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_cross_topic_decomposes_and_retrieves_each_sub_question(fake):
+    r, prompts = fake(
+        {"ml": [_hit("Notes", "aaa", 1)], "bio": [_hit("Bio", "bbb", 2)]},
+        reply=["1. What is A?\n2. What is B?", "synthesis"],
+    )
+    await query.cross_topic_ask("A and B?", "ml", ["ml", "bio"])
+    assert sorted(r.calls) == sorted(
+        (q, t, k) for q in ("What is A?", "What is B?") for t, k in (("ml", 6), ("bio", 2))
+    )
+    assert "Question: A and B?" in prompts[-1]
+
+
+@pytest.mark.asyncio
+async def test_cross_topic_skips_topics_without_chunks(fake, monkeypatch):
+    r, _ = fake({"ml": [_hit("Notes", "aaa", 1)]}, reply=["1. What is A?\n2. What is B?", "ok"])
+    monkeypatch.setattr(query, "_topics_with_chunks", lambda ids: {"ml"})
+    await query.cross_topic_ask("q?", "ml", ["ml", "bio"])
+    assert {t for _, t, _ in r.calls} == {"ml"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply, expected", [
+    ("**1. What is A?**\n\nWhat is A?\nnot a question", ["Q?"]),
+    ("- What is A?\n- What is B?\n* What is C?\n3) What is D?\nWhat is A?",
+     ["What is A?", "What is B?", "What is C?"]),
+    (RuntimeError("down"), ["Q?"]),
+])
+async def test_sub_questions_cleanup(fake, reply, expected):
+    fake({}, reply=reply)
+    assert await query._sub_questions("Q?") == expected
+
+
+@pytest.mark.asyncio
+async def test_topics_with_chunks():
+    from core.ingest import ingest_text
+
+    await ingest_text("Gradient descent steps downhill", title="Opt", topic_id="general")
+    assert query._topics_with_chunks(["general", "nope"]) == {"general"}
+    assert query._topics_with_chunks([]) == set()

@@ -16,6 +16,9 @@ import re
 from typing import Optional
 
 from core.config import settings
+from sqlmodel import select
+
+from core.db import Chunk, session
 from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
 from core.retrieval import Hit, get_retriever
@@ -57,6 +60,25 @@ def _topic_name(topic_id: str) -> str:
     from core.topics import load_topics
 
     return load_topics().get(topic_id, {}).get("name", topic_id)
+
+
+def _topics_with_chunks(topic_ids: list[str]) -> set[str]:
+    with session() as s:
+        return set(s.exec(select(Chunk.topic_id).where(Chunk.topic_id.in_(topic_ids)).distinct()).all())
+
+
+async def _sub_questions(question: str) -> list[str]:
+    """Up to 3 sub-questions the LLM splits a cross-topic question into; [question] if it can't."""
+    try:
+        reply = await llm.complete(
+            f"Split this question into 2 or 3 short, self-contained sub-questions, one per line, "
+            f"each ending in '?'. Output only the sub-questions.\n\nQuestion: {question}"
+        )
+    except Exception:
+        return [question]
+    lines = (re.sub(r"^[-*•\d.)\s]+", "", ln.replace("*", "")).strip() for ln in reply.splitlines())
+    subs = list(dict.fromkeys(ln for ln in lines if ln.endswith("?")))[:3]
+    return subs if len(subs) >= 2 else [question]
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +137,8 @@ async def ask_scoped(question: str, topic_id: str) -> dict:
 async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: list) -> dict:
     """Answer from the primary topic, plus connections from every other topic.
 
-    Retrieves the question per topic (top 6 primary, top 2 each other topic),
-    then generates once over those passages only.
+    Splits the question into sub-questions, retrieves each per topic (top 6
+    primary, top 2 each other topic), then generates once over those passages only.
 
     Returns:
         dict with keys: answer, primary_section, cross_section, sources, citations,
@@ -135,10 +157,18 @@ async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: l
     }
     try:
         retriever = get_retriever()
-        others = [tid for tid in all_topic_ids if tid != primary_topic_id]
+        subs = await _sub_questions(question)
+        present = _topics_with_chunks(list(all_topic_ids))
+        others = [tid for tid in all_topic_ids if tid != primary_topic_id and tid in present]
+
+        async def per_topic(tid: str, k: int) -> list[Hit]:
+            lists = await asyncio.gather(*(retriever.retrieve(q, tid, k=k) for q in subs))
+            merged = {h.chunk_id: h for hits in lists for h in hits}  # sub-question order, de-duped
+            return list(merged.values())[:k]
+
         primary_hits, *other_lists = await asyncio.gather(
-            retriever.retrieve(question, primary_topic_id, k=6),
-            *(retriever.retrieve(question, tid, k=2) for tid in others),
+            per_topic(primary_topic_id, 6) if primary_topic_id in present else asyncio.sleep(0, []),
+            *(per_topic(tid, 2) for tid in others),
         )
         other_hits = [h for hits in other_lists for h in hits]
         if not primary_hits and not other_hits:
