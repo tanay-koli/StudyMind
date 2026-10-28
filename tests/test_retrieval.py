@@ -114,3 +114,36 @@ def test_get_retriever(monkeypatch):
     assert isinstance(retrieval.get_retriever(), retrieval.HybridRetriever)
     monkeypatch.setattr(settings, "retriever", "cognee")
     assert isinstance(retrieval.get_retriever(), retrieval.CogneeRetriever)
+
+
+def test_concurrent_search_and_writes_do_not_fail():
+    # Embedded Qdrant has no internal locking; ingest/delete and ask run in worker threads
+    import threading
+
+    retrieval.index_chunks(_src(), "general", [Block(1, None, f"seed text {i}") for i in range(20)])
+    errors, stop = [], threading.Event()
+
+    def writer():
+        try:
+            for i in range(30):
+                sid = _src()
+                retrieval.index_chunks(sid, "general", [Block(1, None, f"alpha beta {i} {j}") for j in range(5)])
+                retrieval.delete_source_points([sid])
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            stop.set()
+
+    def reader():
+        try:
+            while not stop.is_set():
+                retrieval.HybridRetriever()._search("alpha beta", "general", 6)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
