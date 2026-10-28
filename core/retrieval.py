@@ -6,14 +6,17 @@ Each chunk is a SQLite row and a Qdrant point with the same id: a dense vector
 One collection per embedding model, so models can be compared.
 """
 
+import asyncio
 import warnings
+from dataclasses import dataclass
 from functools import lru_cache
+from typing import Optional, Protocol
 
 from qdrant_client import QdrantClient, models
 from sqlmodel import select
 
-from core.config import settings
-from core.db import Chunk, session
+from core.config import DATA_DIR, settings
+from core.db import Chunk, Source, session
 from core.parse import Block
 
 # name -> (fastembed model, dim, query prefix, document prefix)
@@ -25,6 +28,10 @@ SPARSE_MODEL = "Qdrant/bm25"
 RERANK_MODEL = "BAAI/bge-reranker-base"
 COLLECTION_PREFIX = "chunks_"
 _BATCH = 64
+# Not fastembed's default %TEMP%, which Windows cleanup wipes (~1.2 GB to re-download)
+MODEL_CACHE = str(DATA_DIR / "models")
+CANDIDATES = 30  # per retriever, and fused candidates sent to the reranker
+RRF_K = 60
 
 
 # ---------------------------------------------------------------------------
@@ -35,21 +42,21 @@ _BATCH = 64
 def _dense_model(name: str):
     from fastembed import TextEmbedding
 
-    return TextEmbedding(name)
+    return TextEmbedding(name, cache_dir=MODEL_CACHE)
 
 
 @lru_cache(maxsize=1)
 def _sparse_model():
     from fastembed import SparseTextEmbedding
 
-    return SparseTextEmbedding(SPARSE_MODEL)
+    return SparseTextEmbedding(SPARSE_MODEL, cache_dir=MODEL_CACHE)
 
 
 @lru_cache(maxsize=1)
 def _rerank_model():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-    return TextCrossEncoder(RERANK_MODEL)
+    return TextCrossEncoder(RERANK_MODEL, cache_dir=MODEL_CACHE)
 
 
 def embed_dense(texts: list[str], *, query: bool) -> list[list[float]]:
@@ -180,3 +187,95 @@ def delete_source_points(source_ids: list[int]) -> None:
 def move_source_points(source_id: int, topic_id: str) -> None:
     for name in _chunk_collections():
         store().set_payload(name, payload={"topic_id": topic_id}, points=_source_filter([source_id]))
+
+
+# ---------------------------------------------------------------------------
+# Retrievers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Hit:
+    chunk_id: Optional[int]
+    source_id: Optional[int]
+    source_title: str
+    page: Optional[int]
+    section: Optional[str]
+    text: str
+    score: float
+
+
+class Retriever(Protocol):
+    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]: ...
+
+
+def rrf(rankings: list[list[int]], k: int = RRF_K) -> list[int]:
+    """Reciprocal Rank Fusion: sum of 1 / (k + rank) over rankings, rank from 1."""
+    scores: dict[int, float] = {}
+    for ranking in rankings:
+        for rank, item in enumerate(ranking, start=1):
+            scores[item] = scores.get(item, 0.0) + 1.0 / (k + rank)
+    return sorted(scores, key=scores.get, reverse=True)
+
+
+class HybridRetriever:
+    """Dense + BM25, fused with RRF, then reranked with a cross-encoder."""
+
+    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]:
+        return await asyncio.to_thread(self._search, query, topic_id, k)
+
+    def _search(self, query: str, topic_id: Optional[str], k: int) -> list[Hit]:
+        name = collection_name()
+        client = store()
+        if not client.collection_exists(name):
+            return []
+        flt = None
+        if topic_id:
+            flt = models.Filter(must=[models.FieldCondition(key="topic_id", match=models.MatchValue(value=topic_id))])
+
+        def ids(vector, using: str) -> list[int]:
+            points = client.query_points(name, query=vector, using=using, query_filter=flt, limit=CANDIDATES).points
+            return [p.id for p in points]
+
+        fused = rrf([
+            ids(embed_dense([query], query=True)[0], "dense"),
+            ids(embed_sparse([query], query=True)[0], "bm25"),
+        ])[:CANDIDATES]
+        if not fused:
+            return []
+
+        with session() as s:
+            rows = s.exec(
+                select(Chunk, Source.title).join(Source, Chunk.source_id == Source.id).where(Chunk.id.in_(fused))
+            ).all()
+        if not rows:
+            return []
+        scores = rerank(query, [c.text for c, _ in rows])
+        ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
+        return [
+            Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score))
+            for (c, title), score in ranked
+        ]
+
+
+class CogneeRetriever:
+    """Baseline: Cognee Cloud CHUNKS search. Hits carry no page or chunk id."""
+
+    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]:
+        from core.query import _extract_text_from_recall, _recall
+        from core.topics import get_topic_datasets
+
+        datasets = (get_topic_datasets(topic_id) or None) if topic_id else None
+        recall = await _recall(query, search_type="CHUNKS", datasets=datasets)
+        if not recall["ok"] or not recall["data"]:
+            return []
+        data = recall["data"]
+        hits = []
+        for item in data if isinstance(data, list) else [data]:
+            title = item.get("dataset_name", "Cognee") if isinstance(item, dict) else "Cognee"
+            for text in _extract_text_from_recall([item]):
+                hits.append(Hit(None, None, title, None, None, text, 0.0))
+        return hits[:k]
+
+
+def get_retriever() -> Retriever:
+    return CogneeRetriever() if settings.retriever == "cognee" else HybridRetriever()
