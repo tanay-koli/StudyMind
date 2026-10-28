@@ -16,7 +16,7 @@ import re
 from typing import Optional
 
 from core.config import settings
-from core.graph_utils import build_connection_graph, render_pyvis_graph, SOURCE_COLORS
+from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
 from core.retrieval import Hit, get_retriever
 
@@ -166,9 +166,10 @@ async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: l
         return result
 
     result["answer"] = answer
-    head = f"**From {primary_name}:**"
-    parts = answer.split("**Connected from other topics:**", 1)
-    result["primary_section"] = parts[0].replace(head, "").strip()
+    # Tolerate "**X:**", "**X**:", "### X" and plain "X:" headings
+    parts = re.split(r"(?im)^[#*\s]*connected from other topics[*:\s]*", answer, maxsplit=1)
+    head = rf"(?i)^[#*\s]*from {re.escape(primary_name)}[*:\s]*"
+    result["primary_section"] = re.sub(head, "", parts[0].strip()).strip()
     result["cross_section"] = parts[1].strip() if len(parts) > 1 else ""
     return result
 
@@ -210,10 +211,9 @@ async def summarize_topic(topic: str) -> dict:
 async def connect_topics(topic_a: str, topic_b: str) -> dict:
     """Find and visualize the concepts connecting two topics.
 
-    Retrieves each topic's passages, then:
-      A: shared entities across the passages (local, no LLM)
-      B: if none, the LLM names connecting concepts from both sets of passages
-      C: clean empty state — no fabricated connections
+    Retrieves each topic's passages; when both topics have material, the LLM
+    names the concepts connecting them. Otherwise a clean empty state, so
+    nothing is invented for a topic the material does not cover.
 
     Returns:
         dict with keys: nodes, edges, summary, html_graph, connection_method, error
@@ -233,19 +233,14 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
             retriever.retrieve(topic_a, None, k=6),
             retriever.retrieve(topic_b, None, k=6),
         )
-        attempts = (
-            ("entity_overlap", lambda: _connect_via_entities(topic_a, topic_b, hits_a, hits_b)),
-            ("ai_synthesized", lambda: _connect_via_llm(topic_a, topic_b, hits_a, hits_b)),
-        )
-        if hits_a or hits_b:
-            for method, attempt in attempts:
-                nodes, edges, summary = await attempt()
-                if nodes and edges:
-                    result.update(
-                        nodes=nodes, edges=edges, summary=summary, connection_method=method,
-                        html_graph=render_pyvis_graph(nodes, edges, topic_a, topic_b),
-                    )
-                    return result
+        if hits_a and hits_b:
+            nodes, edges, summary = await _connect_via_llm(topic_a, topic_b, hits_a, hits_b)
+            if nodes and edges:
+                result.update(
+                    nodes=nodes, edges=edges, summary=summary, connection_method="ai_synthesized",
+                    html_graph=render_pyvis_graph(nodes, edges, topic_a, topic_b),
+                )
+                return result
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
 
@@ -256,33 +251,20 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
     return result
 
 
-async def _connect_via_entities(topic_a: str, topic_b: str, hits_a: list[Hit], hits_b: list[Hit]) -> tuple:
-    """Shared entities across the two topics' passages. Returns ([], [], '') if no overlap."""
-    def parsed(hits):
-        return [{"text": h.text, "type": "chunk", "source": None, "metadata": {}, "raw": None} for h in hits]
-
-    nodes, edges = build_connection_graph(topic_a, topic_b, parsed(hits_a), parsed(hits_b))
-    if not nodes or not edges:
-        return [], [], ""
-
-    concept_labels = [n["label"] for n in nodes if n.get("source_type") == "shared"]
-    summary = (
-        f"**Shared concepts connecting '{topic_a}' and '{topic_b}'** "
-        f"(found in both sets of passages):\n\n"
-        + "\n".join(f"- **{label}**" for label in concept_labels)
-    )
-    return nodes, edges, summary
-
-
 async def _connect_via_llm(topic_a: str, topic_b: str, hits_a: list[Hit], hits_b: list[Hit]) -> tuple:
     """The LLM names connecting concepts from both topics' passages."""
+    # A chunk retrieved for both topics goes in once
+    seen = {h.chunk_id for h in hits_a}
+    hits_b = [h for h in hits_b if h.chunk_id not in seen]
     ctx_a, _ = _context(hits_a)
     ctx_b, _ = _context(hits_b, start=len(hits_a) + 1)
     reply = await llm.complete(
         f"Passages about '{topic_a}':\n{ctx_a or '(none)'}\n\n"
         f"Passages about '{topic_b}':\n{ctx_b or '(none)'}\n\n"
-        f"List up to 4 concepts from these passages that connect '{topic_a}' and '{topic_b}', "
-        f"one per line, exactly as:\nCONCEPT: <name> | REASON: <one sentence>",
+        f"If the passages for either topic are about a completely different subject, "
+        f"reply exactly NONE.\n"
+        f"Otherwise list up to 4 concepts from these passages that connect '{topic_a}' and "
+        f"'{topic_b}', one per line, exactly as:\nCONCEPT: <name> | REASON: <one sentence>",
         system="You find connections between study topics using only the given passages.",
     )
     if not reply.strip():
@@ -337,27 +319,20 @@ def _parse_concept_lines(text: str, topic_a: str, topic_b: str) -> tuple:
 
         concept_name = ""
         reason = ""
+        # Small models number, bullet and bold the lines: "1. **CONCEPT:** X | **REASON:** y"
+        plain = re.sub(r"^[-*•\d.)\s]+", "", line.replace("*", "")).strip()
 
-        if "|" in line:
-            parts = line.split("|", 1)
-            left  = parts[0].strip()
-            right = parts[1].strip() if len(parts) > 1 else ""
-
-            for prefix in ("CONCEPT:", "concept:", "Concept:"):
-                if left.startswith(prefix):
-                    left = left[len(prefix):].strip()
-                    break
-            for prefix in ("REASON:", "reason:", "Reason:"):
-                if right.startswith(prefix):
-                    right = right[len(prefix):].strip()
-                    break
-
-            concept_name = left
-            reason = right
+        m = re.match(r"(?i)concept:\s*(.+?)\s*(?:\||\s[–—-]\s)\s*(?:reason:\s*)?(.*)$", plain)
+        if m:
+            concept_name, reason = m.group(1).strip(), m.group(2).strip()
+        elif "|" in plain:
+            left, right = (p.strip() for p in plain.split("|", 1))
+            concept_name = re.sub(r"(?i)^concept:\s*", "", left)
+            reason = re.sub(r"(?i)^reason:\s*", "", right)
         else:
             m = re.match(r"^[-*•\d]+[.):]?\s*(.+)$", line)
             if m:
-                concept_name = m.group(1).strip()
+                concept_name = re.sub(r"(?i)^concept:\s*", "", m.group(1).replace("*", "").strip())
 
         if not concept_name:
             continue

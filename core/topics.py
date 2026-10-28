@@ -245,6 +245,12 @@ def delete_all_sources() -> int:
 # Internal helper — grounded generation over a topic's passages
 # ---------------------------------------------------------------------------
 
+GROUNDED_SYSTEM = (
+    "You are a study assistant. Use only the numbered context passages. "
+    "Do not mention or cite passage numbers."
+)
+
+
 async def _grounded(topic: dict, instruction: str) -> str:
     """Retrieve the topic's passages by its name, then follow the instruction over them.
 
@@ -256,7 +262,9 @@ async def _grounded(topic: dict, instruction: str) -> str:
         if not hits:
             return ""
         context, _ = query._context(hits)
-        return await llm.complete(f"{context}\n\n{instruction}", system=query.CITE_RULES, timeout=180)
+        text = await llm.complete(f"{context}\n\n{instruction}", system=GROUNDED_SYSTEM, timeout=180)
+        # Small models cite anyway; markers would dangle in a cached guide or be read aloud
+        return re.sub(r"\s*(\[\d+\])+", "", text)
     except Exception:
         return ""
 

@@ -39,25 +39,45 @@ RRF_K = 60
 # Models (fastembed, loaded once per process; tests replace these functions)
 # ---------------------------------------------------------------------------
 
+# lru_cache does not lock: concurrent first calls (cross-topic fans out per topic)
+# would each load, and on a fresh install download, the same model
+_model_lock = threading.Lock()
+
+
 @lru_cache(maxsize=None)
-def _dense_model(name: str):
+def _load_dense(name: str):
     from fastembed import TextEmbedding
 
     return TextEmbedding(name, cache_dir=MODEL_CACHE)
 
 
 @lru_cache(maxsize=1)
-def _sparse_model():
+def _load_sparse():
     from fastembed import SparseTextEmbedding
 
     return SparseTextEmbedding(SPARSE_MODEL, cache_dir=MODEL_CACHE)
 
 
 @lru_cache(maxsize=1)
-def _rerank_model():
+def _load_rerank():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
     return TextCrossEncoder(RERANK_MODEL, cache_dir=MODEL_CACHE)
+
+
+def _dense_model(name: str):
+    with _model_lock:
+        return _load_dense(name)
+
+
+def _sparse_model():
+    with _model_lock:
+        return _load_sparse()
+
+
+def _rerank_model():
+    with _model_lock:
+        return _load_rerank()
 
 
 def embed_dense(texts: list[str], *, query: bool) -> list[list[float]]:
