@@ -147,3 +147,13 @@ def test_concurrent_search_and_writes_do_not_fail():
     for t in threads:
         t.join()
     assert errors == []
+
+
+def test_ensure_indexed_fills_gaps_after_model_switch(monkeypatch):
+    retrieval.index_chunks(_src(), "general", [Block(1, None, "alpha")])
+    monkeypatch.setattr(settings, "embed_model", "nomic")
+    retrieval.ensure_indexed()  # new model: collection missing
+    retrieval.index_chunks(_src(), "general", [Block(1, None, "beta")])
+    monkeypatch.setattr(settings, "embed_model", "bge-small")
+    retrieval.ensure_indexed()  # back to old model: missing the source added under nomic
+    assert (_count(collection="chunks_bge_small"), _count(collection="chunks_nomic")) == (2, 2)
