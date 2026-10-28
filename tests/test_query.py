@@ -75,10 +75,11 @@ async def test_cross_topic_without_other_topics(fake):
 
 
 @pytest.mark.asyncio
-async def test_cross_topic_no_material_skips_llm(fake):
+async def test_cross_topic_no_material_skips_llm(fake, monkeypatch):
     _, prompts = fake({})
+    monkeypatch.setattr(query, "_topics_with_chunks", lambda ids: set())
     res = await query.cross_topic_ask("q", "ml", ["ml", "bio"])
-    assert len(prompts) == 1 and "No results found" in res["answer"]  # decomposition only
+    assert prompts == [] and "No results found" in res["answer"]
 
 
 @pytest.mark.asyncio
@@ -207,3 +208,14 @@ async def test_topics_with_chunks():
     await ingest_text("Gradient descent steps downhill", title="Opt", topic_id="general")
     assert query._topics_with_chunks(["general", "nope"]) == {"general"}
     assert query._topics_with_chunks([]) == set()
+
+
+@pytest.mark.asyncio
+async def test_cross_topic_interleaves_sub_questions_and_dedupes(fake):
+    first = [_hit("Notes", f"a{i}", i) for i in range(1, 7)]
+    second = [_hit("Notes", "b", 7), first[0]]  # distinct hit, plus a repeat of chunk 1
+    fake({("What is A?", "ml"): first, ("What is B?", "ml"): second},
+         reply=["1. What is A?\n2. What is B?", "ok"])
+    res = await query.cross_topic_ask("A and B?", "ml", ["ml"])
+    ids = [c["chunk_id"] for c in res["citations"]]
+    assert ids == [1, 7, 2, 3, 4, 5]  # chunk 7 survives the cap; chunk 1 appears once

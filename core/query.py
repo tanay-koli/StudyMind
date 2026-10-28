@@ -13,11 +13,12 @@ generates with the local LLM over the numbered passages; never one string for bo
 import asyncio
 import hashlib
 import re
+from itertools import zip_longest
 from typing import Optional
 
-from core.config import settings
 from sqlmodel import select
 
+from core.config import settings
 from core.db import Chunk, session
 from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
@@ -157,25 +158,29 @@ async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: l
     }
     try:
         retriever = get_retriever()
-        subs = await _sub_questions(question)
         present = _topics_with_chunks(list(all_topic_ids))
+        no_results = (
+            f"No results found in **{primary_name}** or any other topic. "
+            "Try adding more material or asking a broader question."
+        )
+        if not present:
+            result["answer"] = no_results
+            return result
+        subs = await _sub_questions(question)
         others = [tid for tid in all_topic_ids if tid != primary_topic_id and tid in present]
 
         async def per_topic(tid: str, k: int) -> list[Hit]:
             lists = await asyncio.gather(*(retriever.retrieve(q, tid, k=k) for q in subs))
-            merged = {h.chunk_id: h for hits in lists for h in hits}  # sub-question order, de-duped
+            # Round-robin so a later sub-question isn't crowded out by the first one's k hits
+            merged = {h.chunk_id: h for row in zip_longest(*lists) for h in row if h}
             return list(merged.values())[:k]
 
         primary_hits, *other_lists = await asyncio.gather(
-            per_topic(primary_topic_id, 6) if primary_topic_id in present else asyncio.sleep(0, []),
-            *(per_topic(tid, 2) for tid in others),
+            per_topic(primary_topic_id, 6), *(per_topic(tid, 2) for tid in others)
         )
         other_hits = [h for hits in other_lists for h in hits]
         if not primary_hits and not other_hits:
-            result["answer"] = (
-                f"No results found in **{primary_name}** or any other topic. "
-                "Try adding more material or asking a broader question."
-            )
+            result["answer"] = no_results
             return result
 
         ctx_primary, cites_primary = _context(primary_hits)
