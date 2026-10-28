@@ -1,5 +1,6 @@
 """StudyMind — concept triple extraction."""
 
+import asyncio
 import json
 import math
 
@@ -99,3 +100,36 @@ async def test_deleted_chunk_skipped(monkeypatch):
     with session() as s:
         assert s.exec(select(ConceptEdge)).first() is None
         assert s.exec(select(ConceptExtraction)).first() is None
+
+
+@pytest.mark.asyncio
+async def test_worker_wakes_on_ingest(monkeypatch):
+    async def fake(prompt, system=None, **kw):
+        return json.dumps({"chunks": [{"n": 1, "triples": [["a", "rel", "b"]]}]})
+    monkeypatch.setattr(llm, "complete", fake)
+    from core import ingest
+    concepts.start()
+    try:
+        r = await ingest.ingest_text("Transformers use attention over tokens.", "n")
+        assert r["status"] == "success"
+        for _ in range(500):
+            with session() as s:
+                if s.exec(select(ConceptExtraction)).first():
+                    break
+            await asyncio.sleep(0.01)
+        with session() as s:
+            assert s.exec(select(ConceptExtraction)).first()
+    finally:
+        await concepts.stop()
+
+
+def test_wake_without_start_is_noop():
+    concepts.wake()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_cleanly():
+    concepts.start()
+    await asyncio.sleep(0.05)
+    await concepts.stop()
+    await concepts.stop()

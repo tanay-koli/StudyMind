@@ -5,6 +5,8 @@ Pending chunks go to the local LLM in batches; each yields (head, relation, tail
 triples stored in concept_edge, with a concept_extraction row marking it done.
 """
 
+import asyncio
+import contextlib
 import logging
 import re
 
@@ -78,3 +80,38 @@ async def extract_pending() -> int:
                 s.add(ConceptExtraction(chunk_id=c.id))
                 done += 1
             s.commit()
+
+
+_task: asyncio.Task | None = None
+_event: asyncio.Event | None = None
+
+
+async def _run(event: asyncio.Event) -> None:
+    while True:
+        try:
+            await extract_pending()
+        except Exception:
+            log.exception("concept extraction pass failed")
+        await event.wait()
+        event.clear()
+
+
+def start() -> asyncio.Task:
+    global _task, _event
+    _event = asyncio.Event()
+    _task = asyncio.create_task(_run(_event))
+    return _task
+
+
+def wake() -> None:
+    if _event is not None:
+        _event.set()
+
+
+async def stop() -> None:
+    global _task, _event
+    task, _task, _event = _task, None, None
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

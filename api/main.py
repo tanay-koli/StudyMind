@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from core import ingest, query, retrieval, topics
+from core import concepts, ingest, query, retrieval, topics
 from core.config import DATA_DIR, check_llm, http_client, set_http_client
 from core.llm import setup_tracing
 
@@ -28,7 +28,9 @@ async def lifespan(app: FastAPI):
     setup_tracing()
     # Catch up after an EMBED_MODEL switch; first run with a new model embeds every chunk
     await asyncio.to_thread(retrieval.ensure_indexed)
+    concepts.start()
     yield
+    await concepts.stop()
     await http_client().aclose()
     set_http_client(None)
     retrieval.reset_store()  # release the embedded Qdrant file lock
