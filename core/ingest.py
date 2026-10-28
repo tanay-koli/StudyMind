@@ -117,7 +117,7 @@ def _resolve_upload_dataset(topic_id: Optional[str], fallback_dataset: str) -> s
 
 def _register_in_topic(result: dict) -> None:
     """Record a successful ingestion as a source row; adds source_id to result."""
-    src = add_source(result["topic_id"], result["dataset_name"], result["source_type"], result["title"])
+    src = add_source(result["topic_id"], result["source_type"], result["title"])
     result["source_id"] = src["id"]
 
 

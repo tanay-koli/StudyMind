@@ -2,12 +2,8 @@
 StudyMind — Topics Module (NotebookLM-style Notebooks)
 
 A Topic is a named collection of ingested sources — like a Notebook.
-Topics and sources are stored in SQLite (core/db.py). A topic's datasets
-are the distinct Cognee dataset names of its sources.
-
-Key design: when a source is ingested into a topic, the Cognee Cloud
-datasetName IS the topic_id. This lets /api/v1/recall filter by
-datasets=[topic_id] for scoped search.
+Topics, sources and chunks are stored in SQLite (core/db.py); chunk vectors
+live in Qdrant with topic_id in the payload, so search can be scoped to a topic.
 
 Public API
 ----------
@@ -15,7 +11,6 @@ init_db()                                    (create tables, General, import top
 load_topics()                                → dict
 create_topic(name) → dict
 delete_topic(topic_id)
-get_topic_datasets(topic_id) → list[str]
 add_source / list_sources / move_source / delete_source / delete_all_sources
 suggest_topic_name(text_excerpt, existing_names) → str     (async)
 generate_study_guide(topic_id, force=False) → str          (async)
@@ -33,8 +28,8 @@ from typing import Optional
 
 from sqlmodel import delete, select, update
 
-from core import retrieval
-from core.config import settings, DATA_DIR, _headers, http_client
+from core import query, retrieval
+from core.config import DATA_DIR
 from core.db import Chunk, Source, Topic, session
 from core.llm import llm
 
@@ -91,22 +86,14 @@ def _import_legacy_json(s) -> None:
         s.add(Topic(**{k: t.get(k) for k in ("id", "name", "created_at", "color", *_CACHE_FIELDS)}))
         for ds in t.get("datasets", []):
             stype = next((v for p, v in prefixes.items() if ds.startswith(p)), "unknown")
-            s.add(Source(topic_id=tid, dataset_name=ds, source_type=stype, title=ds))
+            s.add(Source(topic_id=tid, source_type=stype, title=ds))
 
 
 def load_topics() -> dict:
-    """Return {topic_id: topic dict with a 'datasets' list}. Always includes 'general'."""
+    """Return {topic_id: topic dict}. Always includes 'general'."""
     with session() as s:
         topics = s.exec(select(Topic).order_by(Topic.created_at)).all()
-        sources = s.exec(select(Source)).all()
-
-    datasets: dict = {}
-    for src in sources:
-        ds = datasets.setdefault(src.topic_id, [])
-        if src.dataset_name not in ds:
-            ds.append(src.dataset_name)
-
-    return {t.id: {**t.model_dump(), "datasets": datasets.get(t.id, [])} for t in topics}
+    return {t.id: t.model_dump() for t in topics}
 
 
 def _update_topic(topic_id: str, **fields) -> None:
@@ -160,7 +147,7 @@ def create_topic(name: str) -> dict:
     with session() as s:
         s.add(topic)
         s.commit()
-    return {**topic.model_dump(), "datasets": []}
+    return topic.model_dump()
 
 
 def delete_topic(topic_id: str) -> bool:
@@ -178,13 +165,6 @@ def delete_topic(topic_id: str) -> bool:
     return True
 
 
-def get_topic_datasets(topic_id: str) -> list:
-    """Return list of dataset names for a topic."""
-    with session() as s:
-        names = s.exec(select(Source.dataset_name).where(Source.topic_id == topic_id)).all()
-    return list(dict.fromkeys(names))
-
-
 def invalidate_caches(topic_id: str) -> None:
     """Clear cached study guide and audio for a topic."""
     _update_topic(topic_id, **dict.fromkeys(_CACHE_FIELDS))
@@ -200,9 +180,9 @@ def _purge(s, source_ids: list[int]) -> None:
     s.exec(delete(Chunk).where(Chunk.source_id.in_(source_ids)))
 
 
-def add_source(topic_id: str, dataset_name: str, source_type: str, title: str) -> dict:
+def add_source(topic_id: str, source_type: str, title: str) -> dict:
     """Record an ingested source and invalidate the topic's caches."""
-    src = Source(topic_id=topic_id, dataset_name=dataset_name, source_type=source_type, title=title)
+    src = Source(topic_id=topic_id, source_type=source_type, title=title)
     with session() as s:
         s.add(src)
         s.commit()
@@ -262,63 +242,28 @@ def delete_all_sources() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Internal LLM helper — single /api/v1/recall GRAPH_COMPLETION call
+# Internal helper — grounded generation over a topic's passages
 # ---------------------------------------------------------------------------
 
-async def _llm_call(prompt: str, topic_id: Optional[str] = None, timeout: int = 60) -> str:
-    """Make one GRAPH_COMPLETION recall call and return the text response.
+async def _grounded(topic: dict, instruction: str) -> str:
+    """Retrieve the topic's passages by its name, then follow the instruction over them.
 
-    If topic_id is provided, scopes the search to that dataset.
-    Returns empty string on failure.
+    The instruction is never the search query. Returns "" when there are no
+    passages or the LLM fails.
     """
-    if not settings.cognee_base_url or not settings.cognee_api_key:
-        return ""
-
-    payload: dict = {
-        "query": prompt,
-        "search_type": "GRAPH_COMPLETION",
-        "top_k": 8,
-    }
-    if topic_id and topic_id != GENERAL_TOPIC_ID:
-        payload["datasets"] = [topic_id]
-
     try:
-        resp = await http_client().post(
-            f"{settings.cognee_base_url}/api/v1/recall",
-            headers=_headers(),
-            json=payload,
-            timeout=timeout,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return _extract_text(data)
-        return ""
+        hits = await query.get_retriever().retrieve(topic["name"], topic["id"], k=8)
+        if not hits:
+            return ""
+        context, _ = query._context(hits)
+        return await llm.complete(f"{context}\n\n{instruction}", system=query.CITE_RULES, timeout=180)
     except Exception:
         return ""
 
 
-def _extract_text(data) -> str:
-    """Pull text from a Cognee recall response."""
-    if not data:
-        return ""
-    if isinstance(data, str):
-        return data
-
-    texts = []
-    items = data if isinstance(data, list) else [data]
-    for item in items:
-        if isinstance(item, str):
-            texts.append(item)
-        elif isinstance(item, dict):
-            t = (
-                item.get("answer", "")
-                or item.get("text", "")
-                or item.get("content", "")
-                or item.get("name", "")
-            )
-            if t:
-                texts.append(str(t).strip())
-    return "\n\n".join(t for t in texts if t)
+def _has_sources(topic_id: str) -> bool:
+    with session() as s:
+        return s.exec(select(Source.id).where(Source.topic_id == topic_id)).first() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +310,7 @@ async def generate_study_guide(topic_id: str, force: bool = False) -> str:
     """Generate a markdown study guide for the topic.
 
     Uses the cached version unless force=True or cache is empty.
-    Makes ONE GRAPH_COMPLETION recall call.
+    Generates over the topic's top passages; a failed attempt is not cached.
 
     Returns the markdown string, or an error message.
     """
@@ -377,7 +322,7 @@ async def generate_study_guide(topic_id: str, force: bool = False) -> str:
     if not force and topic.get("study_guide"):
         return topic["study_guide"]
 
-    if not topic.get("datasets"):
+    if not _has_sources(topic_id):
         return (
             f"No sources ingested into **{topic['name']}** yet. "
             "Add some study material first using the Ingest tab."
@@ -385,7 +330,7 @@ async def generate_study_guide(topic_id: str, force: bool = False) -> str:
 
     topic_name = topic["name"]
     prompt = (
-        f"Create a study guide for the topic '{topic_name}' from the material in this knowledge base.\n\n"
+        f"Create a study guide for the topic '{topic_name}' from these passages.\n\n"
         f"Structure the guide exactly as follows:\n"
         f"## Key Concepts\n"
         f"(bullet list of 5-8 main ideas)\n\n"
@@ -396,13 +341,13 @@ async def generate_study_guide(topic_id: str, force: bool = False) -> str:
         f"Be specific and accurate. Base everything on the actual study material."
     )
 
-    guide = await _llm_call(prompt, topic_id=topic_id, timeout=90)
+    guide = await _grounded(topic, prompt)
 
     if not guide:
-        guide = (
+        return (
             f"# Study Guide: {topic_name}\n\n"
-            "_Could not generate study guide — no content found in the knowledge graph yet. "
-            "Make sure your sources have been successfully ingested._"
+            "_Could not generate study guide — no indexed content found for this topic, "
+            "or the local LLM is not running. Re-ingest older sources if needed._"
         )
 
     _update_topic(topic_id, study_guide=guide, study_guide_generated_at=datetime.now().isoformat())
@@ -416,7 +361,7 @@ async def generate_study_guide(topic_id: str, force: bool = False) -> str:
 async def generate_audio_script(topic_id: str, force: bool = False) -> str:
     """Generate a podcast-style audio script for the topic.
 
-    Cached on the topic row. Makes ONE GRAPH_COMPLETION recall call.
+    Cached on the topic row. Generates over the topic's top passages; a failed attempt is not cached.
     Returns the script string.
     """
     topic = load_topics().get(topic_id)
@@ -426,7 +371,7 @@ async def generate_audio_script(topic_id: str, force: bool = False) -> str:
     if not force and topic.get("audio_script"):
         return topic["audio_script"]
 
-    if not topic.get("datasets"):
+    if not _has_sources(topic_id):
         return (
             f"No sources in '{topic['name']}' yet. "
             "Add study material first."
@@ -435,7 +380,7 @@ async def generate_audio_script(topic_id: str, force: bool = False) -> str:
     topic_name = topic["name"]
     prompt = (
         f"Write a 2-minute podcast-style overview of '{topic_name}' "
-        f"from the material in this knowledge base.\n\n"
+        f"from these passages.\n\n"
         f"Use a warm, conversational tone — like explaining to a curious friend.\n"
         f"Structure:\n"
         f"1. Hook: one compelling sentence that grabs attention\n"
@@ -444,12 +389,12 @@ async def generate_audio_script(topic_id: str, force: bool = False) -> str:
         f"Keep it under 300 words. No bullet points — write in natural spoken sentences."
     )
 
-    script = await _llm_call(prompt, topic_id=topic_id, timeout=90)
+    script = await _grounded(topic, prompt)
 
     if not script:
-        script = (
+        return (
             f"Welcome to your audio overview of {topic_name}. "
-            "No content was found in the knowledge graph yet. "
+            "No indexed content was found for this topic, or the local LLM is not running. "
             "Please ingest some study material and try again."
         )
 
