@@ -106,3 +106,58 @@ async def test_features_report_llm_error(fake):
     fake({"ml": [_hit("Notes", "x", 1)], None: [_hit("Notes", "x", 1)]}, reply=RuntimeError("ollama down"))
     assert "RuntimeError" in (await query.cross_topic_ask("q", "ml", ["ml"]))["error"]
     assert "RuntimeError" in (await query.summarize_topic("x"))["error"]
+
+
+@pytest.mark.asyncio
+async def test_connect_needs_passages_for_both_topics(fake):
+    # Only one side has material: anything the LLM "connects" would be invented
+    _, prompts = fake({("optimisation", None): [_hit("Notes", "gradient descent", 1)]},
+                      reply="CONCEPT: Gradient | REASON: r")
+    res = await query.connect_topics("optimisation", "photosynthesis")
+    assert prompts == [] and res["connection_method"] == "none" and res["nodes"] == []
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_llm_even_when_passages_overlap(fake):
+    # Same short-line chunk for both topics must not become a "shared concept" by itself
+    shared = [_hit("Web", "Source: Web Article\nURL: https://x.test", 1)]
+    _, prompts = fake({("transformers", None): shared, ("attention", None): shared},
+                      reply="CONCEPT: Self-attention | REASON: r")
+    res = await query.connect_topics("transformers", "attention")
+    assert res["connection_method"] == "ai_synthesized" and len(prompts) == 1
+    assert [n["label"] for n in res["nodes"] if n["source_type"] == "shared"] == ["Self-attention"]
+    assert prompts[0].count("URL: https://x.test") == 1  # duplicate chunk sent once
+
+
+def test_concept_parser_handles_numbered_and_bold_lines():
+    reply = (
+        "1. CONCEPT: Gradient | REASON: both step downhill\n"
+        "- **CONCEPT:** Fitness landscape | **REASON:** both climb\n"
+        "CONCEPT: Hill climbing – REASON: local search\n"
+    )
+    nodes, _ = query._parse_concept_lines(reply, "a", "b")
+    assert [n["label"] for n in nodes if n["source_type"] == "shared"] == [
+        "Gradient", "Fitness landscape", "Hill climbing",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [
+    "**From ml**: steps downhill [1]\n\n**Connected from other topics**: enzymes [2]",
+    "### From ml\nsteps downhill [1]\n\n### Connected from other topics\nenzymes [2]",
+    "From ml: steps downhill [1]\n\nConnected from other topics: enzymes [2]",
+])
+async def test_cross_topic_split_tolerates_heading_styles(fake, reply):
+    fake({"ml": [_hit("Notes", "gradient descent", 1)], "bio": [_hit("Bio", "enzymes", 2)]}, reply=reply)
+    res = await query.cross_topic_ask("q", "ml", ["ml", "bio"])
+    assert (res["primary_section"], res["cross_section"]) == ("steps downhill [1]", "enzymes [2]")
+
+
+@pytest.mark.asyncio
+async def test_connect_llm_can_decline(fake):
+    # Retrieval always returns the nearest chunks, even for a topic the material never covers
+    _, prompts = fake({("optimisation", None): [_hit("Notes", "gradient descent", 1)],
+                       ("medieval poetry", None): [_hit("Bio", "natural selection", 2)]}, reply="NONE")
+    res = await query.connect_topics("optimisation", "medieval poetry")
+    assert res["connection_method"] == "none" and res["nodes"] == []
+    assert "NONE" in prompts[0]

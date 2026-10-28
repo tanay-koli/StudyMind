@@ -803,10 +803,7 @@ with tab_ask:
                     st.error(result["error"])
                 else:
                     st.markdown(result.get("summary", "No summary generated."))
-                    if result.get("sources_referenced"):
-                        st.markdown("**Sources referenced:**")
-                        for src in result["sources_referenced"]:
-                            st.caption(f"  • {src}")
+                    _render_citations(result.get("citations", []))
 
 
 # ========================== TAB 3: CONNECT TOPICS ==========================

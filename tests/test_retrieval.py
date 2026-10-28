@@ -178,3 +178,28 @@ async def test_heading_text_is_searchable():
     hits = await retrieval.HybridRetriever().retrieve("backpropagation", "general", k=1)
     assert hits[0].section == "Backpropagation"
     assert hits[0].text == "chain rule applied layer by layer"  # citation text stays the body
+
+
+def test_model_loaders_load_once_under_concurrency(monkeypatch):
+    # First cross-topic call fans out one retrieval per topic; a cold cache must not load N copies
+    import threading
+    import time
+
+    import fastembed
+
+    loads = []
+
+    class SlowModel:
+        def __init__(self, *a, **kw):
+            loads.append(a)
+            time.sleep(0.05)
+
+    monkeypatch.setattr(fastembed, "TextEmbedding", SlowModel)
+    retrieval._load_dense.cache_clear()
+    threads = [threading.Thread(target=retrieval._dense_model, args=("m",)) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    retrieval._load_dense.cache_clear()
+    assert len(loads) == 1

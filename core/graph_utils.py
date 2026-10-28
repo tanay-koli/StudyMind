@@ -1,8 +1,7 @@
 """
 StudyMind — Graph Utilities
 
-Helpers to build connection graphs from overlapping passages and render
-interactive pyvis visualizations.
+Renders topic-connection graphs as interactive pyvis HTML.
 """
 
 import hashlib
@@ -22,139 +21,6 @@ SOURCE_COLORS = {
     "shared": "#1E90FF",    # Connecting blue
     "default": "#A4B0BE",   # Neutral gray
 }
-
-
-def _extract_entity_names(parsed_results: list[dict]) -> set[str]:
-    """Extract entity/concept names from parsed results.
-
-    Looks for capitalized multi-word terms, quoted terms, and
-    structured entity references in the results.
-    """
-    entities = set()
-    for item in parsed_results:
-        text = item.get("text", "")
-        if not text:
-            continue
-
-        # Add the raw text as a potential entity (for graph nodes)
-        # Truncate long texts to a reasonable label
-        clean = text.strip()
-        if len(clean) <= 80:
-            entities.add(clean)
-        else:
-            # For longer texts, try to extract key terms
-            # Look for text that appears structured (from graph context)
-            lines = clean.split("\n")
-            for line in lines[:10]:
-                line = line.strip()
-                if line and len(line) <= 80:
-                    entities.add(line)
-
-        # Also check metadata for structured entities
-        metadata = item.get("metadata", {})
-        if isinstance(metadata, dict):
-            for key in ("name", "subject", "object", "predicate", "entity"):
-                val = metadata.get(key)
-                if val and isinstance(val, str):
-                    entities.add(val)
-
-    return entities
-
-
-def build_connection_graph(
-    topic_a: str,
-    topic_b: str,
-    results_a: list[dict],
-    results_b: list[dict],
-) -> tuple[list[dict], list[dict]]:
-    """Find overlapping entities between two topic searches and build a graph.
-
-    NOTE: This function is kept for backward compatibility with code that still
-    calls it directly. The preferred path is query.py's _connect_via_graph()
-    (Option A) or _connect_via_llm() (Option B), both of which produce real
-    or honestly-labelled connections.
-
-    Strategy:
-    1. Extract entity names from both result sets
-    2. Find entities that appear in both sets (overlap = connection points)
-    3. Build a node-edge graph: topic_a -> shared entities -> topic_b
-
-    Fix (2026-07-01): Removed the misleading '?' bridge node. When no overlap
-    is found, return ([], []) instead of fabricating a fake connection.
-
-    Args:
-        topic_a: First topic name.
-        topic_b: Second topic name.
-        results_a: Parsed results from searching topic_a.
-        results_b: Parsed results from searching topic_b.
-
-    Returns:
-        Tuple of (nodes, edges). Returns ([], []) when no real overlap exists.
-    """
-    nodes = []
-    edges = []
-    node_ids = set()
-
-    def _node_id(label: str) -> str:
-        return hashlib.md5(label.lower().encode()).hexdigest()[:8]
-
-    def _add_node(label: str, source_type: str = "default", title: str = "") -> str:
-        nid = _node_id(label)
-        if nid not in node_ids:
-            node_ids.add(nid)
-            nodes.append({
-                "id": nid,
-                "label": label[:50],
-                "color": SOURCE_COLORS.get(source_type, SOURCE_COLORS["default"]),
-                "source_type": source_type,
-                "title": title or label,
-            })
-        return nid
-
-    # Add the two main topic nodes
-    id_a = _add_node(topic_a, "topic", f"Topic: {topic_a}")
-    id_b = _add_node(topic_b, "topic", f"Topic: {topic_b}")
-
-    # Extract entities from both sets
-    entities_a = _extract_entity_names(results_a)
-    entities_b = _extract_entity_names(results_b)
-
-    # Find shared entities (case-insensitive overlap)
-    entities_a_lower = {e.lower(): e for e in entities_a}
-    entities_b_lower = {e.lower(): e for e in entities_b}
-
-    shared_keys = set(entities_a_lower.keys()) & set(entities_b_lower.keys())
-
-    # Remove the topic names themselves from shared (avoid self-loops)
-    shared_keys -= {topic_a.lower(), topic_b.lower()}
-
-    if shared_keys:
-        for key in list(shared_keys)[:10]:  # Limit to avoid visual clutter
-            shared_label = entities_a_lower.get(key, key)
-            sid = _add_node(shared_label, "shared", f"Shared concept: {shared_label}")
-
-            edges.append({
-                "from_id": id_a,
-                "to_id": sid,
-                "from_label": topic_a,
-                "to_label": shared_label,
-                "relationship": "relates to",
-            })
-            edges.append({
-                "from_id": sid,
-                "to_id": id_b,
-                "from_label": shared_label,
-                "to_label": topic_b,
-                "relationship": "relates to",
-            })
-    else:
-        # No real overlap found.
-        # Return empty ([], []) so the caller can show a clean empty state.
-        # Do NOT fabricate a '?' bridge node — that was misleading in a demo context.
-        return [], []
-
-    return nodes, edges
-
 
 
 def render_pyvis_graph(

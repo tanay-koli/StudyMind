@@ -112,51 +112,6 @@ class TestPDFIngestion:
 class TestGraphUtils:
     """Test graph utility functions."""
 
-    def test_build_connection_graph_with_overlap(self):
-        """Should find shared entities between two result sets."""
-        from core.graph_utils import build_connection_graph
-
-        results_a = [
-            {"text": "attention mechanism", "type": "entity", "source": None, "metadata": {}, "raw": None},
-            {"text": "transformer", "type": "entity", "source": None, "metadata": {}, "raw": None},
-        ]
-        results_b = [
-            {"text": "attention mechanism", "type": "entity", "source": None, "metadata": {}, "raw": None},
-            {"text": "neural network", "type": "entity", "source": None, "metadata": {}, "raw": None},
-        ]
-
-        nodes, edges = build_connection_graph("transformers", "BERT", results_a, results_b)
-
-        assert len(nodes) > 0, "Should have nodes"
-        assert len(edges) > 0, "Should have edges"
-
-        # Should have the two topic nodes
-        labels = [n["label"] for n in nodes]
-        assert "transformers" in labels
-        assert "BERT" in labels
-
-    def test_build_connection_graph_no_overlap(self):
-        """Should return ([], []) when no shared entities exist.
-
-        build_connection_graph intentionally returns empty results when
-        there's no real overlap — fabricating a '?' bridge node was removed
-        as it was misleading. Callers handle the empty state cleanly.
-        """
-        from core.graph_utils import build_connection_graph
-
-        results_a = [
-            {"text": "calculus", "type": "entity", "source": None, "metadata": {}, "raw": None},
-        ]
-        results_b = [
-            {"text": "poetry", "type": "entity", "source": None, "metadata": {}, "raw": None},
-        ]
-
-        nodes, edges = build_connection_graph("math", "literature", results_a, results_b)
-
-        # No overlap → clean empty state, not a fabricated bridge
-        assert nodes == [], "No overlap should return empty nodes"
-        assert edges == [], "No overlap should return empty edges"
-
     def test_empty_graph_html(self):
         """Empty graph should produce valid HTML."""
         from core.graph_utils import render_pyvis_graph

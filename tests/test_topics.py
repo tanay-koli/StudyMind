@@ -157,3 +157,25 @@ def test_init_db_drops_legacy_dataset_name_column(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_suggest_topic_name_uses_llm():
     assert await topics.suggest_topic_name("Attention heads...", []) == "Transformer Models"
+
+
+@pytest.mark.asyncio
+async def test_grounded_output_has_no_passage_markers(monkeypatch):
+    # Guides are cached without citations and scripts are read aloud: [n] would dangle
+    systems = []
+
+    async def complete(prompt, system=None, **kw):
+        systems.append(system)
+        return "Gradient descent steps downhill [1]. It uses a learning rate [2][3]."
+
+    class OneHit:
+        async def retrieve(self, q, topic_id, k=6):
+            return [Hit(1, 1, "Notes", 2, None, "gradient descent", 1.0)]
+
+    monkeypatch.setattr(llm, "complete", complete)
+    monkeypatch.setattr(query, "get_retriever", OneHit)
+    tid = topics.create_topic("Optimisation")["id"]
+    topics.add_source(tid, "note", "n")
+
+    assert await topics.generate_audio_script(tid) == "Gradient descent steps downhill. It uses a learning rate."
+    assert "square brackets" not in systems[0]
