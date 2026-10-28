@@ -15,11 +15,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from core import ingest, query, retrieval, topics
-from core.config import DATA_DIR, check_cognee_cloud, check_llm, http_client, set_http_client
+from core.config import DATA_DIR, check_llm, http_client, set_http_client
 from core.llm import setup_tracing
 
 UPLOAD_DIR = DATA_DIR / "uploads"
-FORGET_NOTE = "Source and its indexed chunks deleted. Data uploaded to Cognee Cloud persists."
+FORGET_NOTE = "Source and its indexed chunks deleted."
 
 
 @asynccontextmanager
@@ -92,8 +92,7 @@ def _require_topic(topic_id: Optional[str]) -> dict:
 
 @app.get("/health")
 async def health():
-    cognee, llm = await asyncio.gather(check_cognee_cloud(timeout=5), check_llm())
-    return {"cognee": cognee, "llm": llm}
+    return {"llm": await check_llm()}
 
 
 # ---------------------------------------------------------------------------

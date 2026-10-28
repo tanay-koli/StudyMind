@@ -1,8 +1,8 @@
 # 🧠 StudyMind — Personal Study Assistant
 
-**StudyMind** is a personal study assistant powered by [Cognee Cloud](https://app.cognee.ai) — an AI memory platform that builds a knowledge graph from your study material and lets you query it intelligently.
+**StudyMind** is a personal study assistant that runs entirely on your machine. It indexes your study material with its own retrieval pipeline (hybrid search + reranking) and answers with a local LLM, citing the source and page for every claim.
 
-> ☁️ **Cloud-powered with NotebookLM Features** — No local LLM or heavy hardware required. Organizes your study materials into Notebooks (Topics), autogenerates Study Guides, synthesizes Audio Overview podcasts, and discovers cross-topic connections.
+> 🖥️ **Local and free, with NotebookLM features** — no cloud account or API key needed. Organizes your material into Notebooks (Topics), generates Study Guides, synthesizes Audio Overview podcasts, and discovers cross-topic connections.
 
 ---
 
@@ -11,13 +11,13 @@
 | Feature | Description |
 |---------|-------------|
 | **📚 Topics (Notebooks)** | Group your ingested resources into collections (e.g. "ML Course", "DSA Prep") with custom color tags. |
-| **📥 Multi-Source Ingest** | Upload PDFs, YouTube transcripts, web articles, or paste your own notes. |
-| **💡 AI Topic Suggestions** | Automatically analyzes ingested text excerpts and suggests which topic folder the content belongs to via toast/banner confirmation. |
-| **💬 Scoped Q&A** | Query the knowledge graph scoped strictly to a single topic, or query all. |
-| **🔍 Cross-Topic Connections** | Ask a question primarily using one topic, but search for and synthesize connection paths from other topics in parallel. |
-| **📖 Auto Study Guides** | Generates detailed key concepts, review details, and practice questions for a topic. Exportable to Markdown (`.md`). |
-| **🎙️ Audio Overviews** | Generates a podcast overview script and synthesizes local speech (`.wav`) via `pyttsx3` so you can listen to summary audio. |
-| **🔗 Topic Map Visualization** | Hero feature — discover how topics and concepts relate through interactive 2D node graphs. |
+| **📥 Multi-Source Ingest** | Upload PDFs, YouTube transcripts, web articles, or paste your own notes. PDFs keep page numbers and section headings. |
+| **💡 AI Topic Suggestions** | Suggests which topic new material belongs to via a toast/banner confirmation. |
+| **💬 Scoped Q&A with citations** | Ask within one topic or across all; answers cite passages as `[n]` and show clickable chips like `📄 notes.pdf · p.12`. |
+| **🔍 Cross-Topic Connections** | Answer from one topic and surface related passages from the others. |
+| **📖 Auto Study Guides** | Key concepts, details and review questions for a topic. Exportable to Markdown (`.md`). |
+| **🎙️ Audio Overviews** | A podcast-style script, spoken locally (`.wav`) via `pyttsx3`. |
+| **🔗 Topic Map Visualization** | Discover how topics and concepts relate through interactive node graphs. |
 
 ---
 
@@ -30,15 +30,16 @@
 │ (thin client)        │          │  summarize · connect · study guide/audio │
 └──────────────────────┘          └───────┬───────────┬───────────┬──────────┘
                                           │           │           │
-                              ┌───────────▼──┐ ┌──────▼─────┐ ┌───▼──────────────┐
-                              │ SQLite       │ │ LLMClient  │ │ Cognee Cloud API │
-                              │ (SQLModel)   │ │ (LiteLLM → │ │ /remember        │
-                              │ topic,source │ │  Ollama)   │ │ /recall          │
-                              └──────────────┘ └─────┬──────┘ └──────────────────┘
-                                                     │ traces (optional)
-                                                     ▼
-                                                  Langfuse
+                              ┌───────────▼──┐ ┌──────▼──────┐ ┌──▼────────────────┐
+                              │ SQLite       │ │ Qdrant      │ │ LLMClient         │
+                              │ (SQLModel)   │ │ (embedded)  │ │ (LiteLLM → Ollama)│
+                              │ topic,source,│ │ dense + BM25│ └─────┬─────────────┘
+                              │ chunk        │ │ vectors     │       │ traces (optional)
+                              └──────────────┘ └─────────────┘       ▼
+                                                                  Langfuse
 ```
+
+**Retrieval:** PyMuPDF blocks → structure-aware chunks (512 tokens) → bge-small dense vectors + BM25 sparse vectors in Qdrant → Reciprocal Rank Fusion (k = 60) → bge-reranker-base picks the top 6. Every feature sends a short retrieval query (the question or topic) and a separate generation prompt.
 
 ---
 
@@ -46,22 +47,28 @@
 
 ```
 StudyMind/
-├── .env.example           # Template — copy to .env and add your credentials
+├── .env.example           # Optional settings — copy to .env to change defaults
 ├── requirements.txt       # Python dependencies (new ones pinned)
 ├── api/
 │   └── main.py            # FastAPI app: every feature as an HTTP endpoint
 ├── core/
-│   ├── config.py          # pydantic-settings, shared async HTTP client, health checks
-│   ├── db.py              # SQLModel tables: topic, source
+│   ├── config.py          # pydantic-settings, shared async HTTP client, LLM health check
+│   ├── db.py              # SQLModel tables: topic, source, chunk
 │   ├── llm.py             # LLMClient (LiteLLM): token/cost/latency logging, Langfuse
+│   ├── parse.py           # PDF → blocks with page and section heading
+│   ├── chunking.py        # Fixed (512/64) and structure-aware chunkers
+│   ├── retrieval.py       # Qdrant store, HybridRetriever, DenseRetriever (baseline)
+│   ├── ingest.py          # Parse, chunk and index each source
+│   ├── query.py           # Grounded Q&A, cross-topic, summarize, connect
 │   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
-│   ├── ingest.py          # Extracts text locally, uploads scoped to topic datasets
-│   ├── query.py           # Scoped recall, cross-topic query synthesis, global Q&A
-│   └── graph_utils.py     # Parse recall results, build graphs, render pyvis HTML
+│   └── graph_utils.py     # Build connection graphs, render pyvis HTML
+├── eval/
+│   ├── dataset.jsonl      # Eval questions (add ~15 a week)
+│   └── run.py             # python -m eval.run --retriever hybrid|dense
 ├── ui/
 │   └── app.py             # Streamlit UI — calls the API only
-├── data/                  # studymind.db, uploads/, audio/ (git-ignored)
-└── tests/                 # Offline: Cognee, Ollama and the LLM are mocked
+├── data/                  # studymind.db, qdrant/, models/, uploads/, audio/ (git-ignored)
+└── tests/                 # Offline: Ollama, embedders and reranker are faked
 ```
 
 ---
@@ -71,8 +78,8 @@ StudyMind/
 ### Prerequisites
 
 - **Python 3.11+**
-- A **Cognee Cloud** account with an API key — sign up at [app.cognee.ai](https://app.cognee.ai)
 - **[Ollama](https://ollama.com)** for the local LLM (or set `LLM_MODEL` to a hosted model)
+- About **1.2 GB** of disk for the embedding, BM25 and reranker models (downloaded to `data/models/` on first use)
 
 ### Step 1: Clone & Install Dependencies
 
@@ -84,21 +91,17 @@ pip install -r requirements.txt
 ollama pull qwen2.5:7b
 ```
 
-### Step 2: Configure
+### Step 2: Configure (optional)
 
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
+Everything has a default. To change it, create a `.env`:
 
 ```env
-COGNEE_BASE_URL=https://tenant-YOUR_TENANT_ID.aws.cognee.ai
-COGNEE_API_KEY=your_api_key_here
 LLM_MODEL=ollama/qwen2.5:7b        # or ollama/gemma3:4b, groq/..., anthropic/...
+EMBED_MODEL=bge-small              # bge-small | nomic (reindexes on next start)
+CHUNKER=structure                  # structure | fixed
+RETRIEVER=hybrid                   # hybrid | dense (baseline)
 ```
 
-> 💡 Get your `COGNEE_BASE_URL` and `COGNEE_API_KEY` from the [Cognee Cloud console](https://app.cognee.ai) under **Integrations → API / MCP → Step 1**.
 > Set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` to trace every LLM call in Langfuse.
 
 ### Step 3: Run StudyMind
@@ -108,8 +111,9 @@ uvicorn api.main:app --reload      # API on http://localhost:8000 (docs at /docs
 streamlit run ui/app.py            # UI on http://localhost:8501 (second terminal)
 ```
 
-The sidebar shows **🟢 Connected** for Cognee Cloud and the LLM when both are reachable.
+The sidebar shows **🟢 Connected** for the LLM when Ollama is running and the model is pulled.
 On first start, an existing `data/topics.json` is imported into `data/studymind.db` (the JSON file is kept as a backup).
+Sources added before local indexing existed have no chunks: re-add them to make them searchable.
 
 ---
 
@@ -119,7 +123,16 @@ On first start, an existing `data/topics.json` is imported into `data/studymind.
 pytest -v
 ```
 
-All tests run offline: Cognee Cloud and Ollama are mocked with `httpx.MockTransport`, the LLM is faked, and each test gets a temporary SQLite database.
+All tests run offline: Ollama is mocked with `httpx.MockTransport`, the LLM, embedders and reranker are faked, Qdrant runs in memory, and each test gets a temporary SQLite database.
+
+## 📏 Evaluation
+
+```bash
+python -m eval.run --retriever hybrid
+python -m eval.run --retriever dense    # baseline: dense vectors only, no BM25/RRF/rerank
+```
+
+Results go to `eval/results/<retriever>-<embed>-<date>.jsonl`. Stop the API first: embedded Qdrant allows one process at a time.
 
 ---
 
@@ -135,17 +148,18 @@ Go to the **📥 Ingest** tab, select your topic dropdown, and add content:
 - **Web Article** — Paste a link.
 - **Notes** — Paste raw typed notes.
 
-After ingestion, Cognee analyzes the content, fires a toast, and shows a top banner asking if you'd like to move it to a suggested AI-derived topic.
+The content is chunked and indexed locally; a banner then suggests a topic for it.
 
 ### 3. Ask Questions
 In the **💬 Ask** tab:
-- Choose your scope: **All Topics** or select a specific topic notebook.
-- Toggle **🔍 Find connections across topics** to perform a comparative vector search and display segmented answers.
+- Choose your scope: **All Topics** or a specific topic notebook.
+- Click a citation chip under an answer to read the exact passage.
+- Toggle **🔍 Find connections across topics** for a two-part answer: your topic first, then related points from the others.
 
 ### 4. Topic Study Guides & Audio Overviews
 In the sidebar next to each topic row:
 - Click `[📖]` (Study Guide) to generate key concepts and review questions. Download the output directly as `.md`.
-- Click `[🎙️]` (Audio Overview) to generate a conversational speech script and play a generated podcast voice-over natively inside Streamlit.
+- Click `[🎙️]` (Audio Overview) to generate a conversational script and play the voice-over inside Streamlit.
 
 ---
 
@@ -156,9 +170,10 @@ In the sidebar next to each topic row:
 | UI | [Streamlit](https://streamlit.io) |
 | API | [FastAPI](https://fastapi.tiangolo.com) |
 | Storage | SQLite via [SQLModel](https://sqlmodel.tiangolo.com) |
+| Vector store | [Qdrant](https://qdrant.tech) (embedded mode) |
+| Embeddings, BM25, reranker | [fastembed](https://github.com/qdrant/fastembed): bge-small-en-v1.5, Qdrant/bm25, bge-reranker-base |
 | LLM | [LiteLLM](https://docs.litellm.ai) → [Ollama](https://ollama.com) (Qwen 2.5 by default) |
 | Tracing | [Langfuse](https://langfuse.com) (optional) |
-| Knowledge Graph | [Cognee Cloud](https://app.cognee.ai) REST API |
 | Speech Engine (TTS) | [pyttsx3](https://pyttsx3.readthedocs.io/) |
 | PDF extraction | [PyMuPDF](https://pymupdf.readthedocs.io/) |
 | Web scraping | [trafilatura](https://trafilatura.readthedocs.io/) |
@@ -170,4 +185,4 @@ In the sidebar next to each topic row:
 
 ## 📝 License
 
-Built for hackathon purposes. Uses [Cognee](https://github.com/topoteretes/cognee) (Apache 2.0).
+Built for hackathon purposes.
