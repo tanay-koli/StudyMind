@@ -29,7 +29,7 @@ def _pdf_bytes(*pages: str) -> bytes:
 
 def test_health(client):
     body = client.get("/health").json()
-    assert body["cognee"]["ok"] and body["llm"]["ok"]
+    assert list(body) == ["llm"] and body["llm"]["ok"]
 
 
 def test_full_flow(client, offline):

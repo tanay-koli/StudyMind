@@ -245,16 +245,15 @@ with st.sidebar:
             background-clip: text;
         ">StudyMind</div>
         <div style="font-size: 0.8rem; color: #8b949e; margin-top: 2px;">
-            AI Study Assistant • Cognee Cloud
+            AI Study Assistant • local RAG
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # Cognee Cloud + LLM status
+    # LLM status
     for label, status in (
-        ("Cognee Cloud", st.session_state.health["cognee"]),
         (f"LLM ({settings.llm_model})", st.session_state.health["llm"]),
     ):
         st.markdown(f"**{label}:** {get_cloud_status_emoji(status)}")
@@ -540,7 +539,7 @@ with tab_ingest:
                 if ingest_topic_id:
                     form["topic_id"] = ingest_topic_id
 
-                with st.spinner("📄 Extracting text & uploading to Cognee Cloud..."):
+                with st.spinner("📄 Extracting, chunking & indexing..."):
                     result = api(
                         "POST",
                         "/ingest/pdf",
@@ -579,7 +578,7 @@ with tab_ingest:
         )
         if yt_url:
             if st.button("🎥 Ingest YouTube", key="btn_ingest_yt", use_container_width=True):
-                with st.spinner("🎥 Fetching transcript & uploading to Cognee Cloud..."):
+                with st.spinner("🎥 Fetching transcript & indexing..."):
                     result = api("POST", "/ingest/youtube", json={"url": yt_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
@@ -608,7 +607,7 @@ with tab_ingest:
         )
         if web_url:
             if st.button("🌐 Ingest Article", key="btn_ingest_web", use_container_width=True):
-                with st.spinner("🌐 Extracting article & uploading to Cognee Cloud..."):
+                with st.spinner("🌐 Extracting article & indexing..."):
                     result = api("POST", "/ingest/url", json={"url": web_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
@@ -643,7 +642,7 @@ with tab_ingest:
         )
         if note_text:
             if st.button("📝 Ingest Notes", key="btn_ingest_note", use_container_width=True):
-                with st.spinner("📝 Processing notes & uploading to Cognee Cloud..."):
+                with st.spinner("📝 Indexing notes..."):
                     result = api("POST", "/ingest/text", json={
                         "text": note_text,
                         "title": note_title or "Untitled Note",
@@ -797,7 +796,7 @@ with tab_ask:
         )
         if summary_topic:
             if st.button("📋 Generate Summary", key="btn_summarize", use_container_width=True):
-                with st.spinner(f"📋 Summarizing '{summary_topic}' via Cognee Cloud..."):
+                with st.spinner(f"📋 Summarizing '{summary_topic}'..."):
                     result = api("POST", "/summarize", json={"topic": summary_topic})
 
                 if result.get("error"):
@@ -853,7 +852,7 @@ with tab_connect:
                 use_container_width=True,
                 type="primary",
             ):
-                with st.spinner(f"🔗 Finding connections between '{topic_a}' and '{topic_b}' via Cognee Cloud..."):
+                with st.spinner(f"🔗 Finding connections between '{topic_a}' and '{topic_b}'..."):
                     result = api("POST", "/connect", json={"topic_a": topic_a, "topic_b": topic_b})
 
                 if result.get("error"):

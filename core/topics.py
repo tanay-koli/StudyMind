@@ -199,7 +199,7 @@ def list_sources(topic_id: Optional[str] = None) -> list[dict]:
 
 
 def move_source(source_id: int, topic_id: str) -> Optional[dict]:
-    """Reassign a source and its chunks to another topic (the Cognee dataset stays the same)."""
+    """Reassign a source and its chunks to another topic."""
     with session() as s:
         src = s.get(Source, source_id)
         if src is None or s.get(Topic, topic_id) is None:
@@ -216,7 +216,7 @@ def move_source(source_id: int, topic_id: str) -> Optional[dict]:
 
 
 def delete_source(source_id: int) -> Optional[dict]:
-    """Remove a source, its chunks and Qdrant points. Cognee Cloud data is not deleted (no delete API yet)."""
+    """Remove a source, its chunks and Qdrant points."""
     with session() as s:
         src = s.get(Source, source_id)
         if src is None:

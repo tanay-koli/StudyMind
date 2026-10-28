@@ -1,5 +1,5 @@
 """
-StudyMind — Ingestion tests (offline: Cognee Cloud is mocked in conftest.py)
+StudyMind — Ingestion tests (offline: models are faked in conftest.py)
 
 Run with: pytest -v
 """
@@ -23,7 +23,7 @@ class TestTextIngestion:
         assert isinstance(result, dict)
         assert "status" in result
         assert "title" in result
-        assert "dataset_name" in result
+        assert "dataset_name" not in result and "cognee" not in result
         assert result["title"] == "Test Note"
         assert result["status"] == "success"
 
@@ -39,20 +39,13 @@ class TestTextIngestion:
         assert [s["id"] for s in list_sources(tid)] == [result["source_id"]]
 
     @pytest.mark.asyncio
-    async def test_ingest_text_cloud_error(self, offline):
-        """A Cognee error is reported but the local index still succeeds."""
-        import httpx
-        from core import config
+    async def test_ingest_is_local_only(self, offline):
+        """Ingest never calls a remote service."""
         from core.ingest import ingest_text
-        from core.topics import list_sources
 
-        config.set_http_client(httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom"))
-        ))
         result = await ingest_text(text="hello", title="Note")
         assert result["status"] == "success" and result["chunk_count"] == 1
-        assert result["cognee"]["ok"] is False and "500" in result["cognee"]["error"]
-        assert [s["id"] for s in list_sources()] == [result["source_id"]]
+        assert offline == []
 
     @pytest.mark.asyncio
     async def test_index_failure_rolls_back(self, monkeypatch):
@@ -114,27 +107,6 @@ class TestPDFIngestion:
         with session() as s:
             pages = s.exec(select(Chunk.page).where(Chunk.source_id == result["source_id"])).all()
         assert sorted(pages) == [1, 2]
-
-
-class TestDatasetNaming:
-    """Test dataset name sanitization."""
-
-    def test_sanitize_dataset_name(self):
-        """Dataset names should be alphanumeric + underscores."""
-        from core.ingest import _sanitize_dataset_name
-
-        assert _sanitize_dataset_name("My Study Notes!") == "my_study_notes"
-        assert _sanitize_dataset_name("test-file-2024.pdf") == "test_file_2024_pdf"
-        assert _sanitize_dataset_name("") == "untitled"
-        assert _sanitize_dataset_name("  spaces  ") == "spaces"
-
-    def test_make_dataset_name(self):
-        """Dataset names should include the source type prefix."""
-        from core.ingest import _make_dataset_name
-
-        name = _make_dataset_name("pdf", "My Paper")
-        assert name.startswith("pdf_")
-        assert "my_paper" in name
 
 
 class TestGraphUtils:
