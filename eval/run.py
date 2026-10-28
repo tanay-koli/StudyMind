@@ -2,7 +2,7 @@
 StudyMind — Eval runner: answer every dataset question with one retriever and
 record the hits, so retrievers (and embedding models) can be compared later.
 
-Usage: python -m eval.run --retriever hybrid|cognee [--embed bge-small|nomic]
+Usage: python -m eval.run --retriever hybrid|dense [--embed bge-small|nomic]
 Writes eval/results/<retriever>-<embed>-<YYYY-MM-DD>.jsonl. Metrics come in Phase 6.
 """
 
@@ -24,8 +24,7 @@ async def run(dataset: Path, out_dir: Path, retriever: str, embed: str) -> Path:
     settings.retriever = retriever
     settings.embed_model = embed
     init_db()
-    if retriever == "hybrid":
-        retrieval.ensure_indexed()
+    retrieval.ensure_indexed()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{retriever}-{embed}-{date.today().isoformat()}.jsonl"
@@ -45,7 +44,7 @@ async def run(dataset: Path, out_dir: Path, retriever: str, embed: str) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--retriever", choices=["hybrid", "cognee"], default="hybrid")
+    parser.add_argument("--retriever", choices=["hybrid", "dense"], default="hybrid")
     parser.add_argument("--embed", choices=list(retrieval.EMBED_MODELS), default=settings.embed_model)
     parser.add_argument("--dataset", type=Path, default=EVAL_DIR / "dataset.jsonl")
     args = parser.parse_args()

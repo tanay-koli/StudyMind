@@ -205,7 +205,7 @@ async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dic
         "answer": "",
         "sources": [],
         "citations": [],
-        "search_type": "COGNEE_CHUNKS" if settings.retriever == "cognee" else "HYBRID",
+        "search_type": settings.retriever.upper(),
         "error": None,
     }
     try:
