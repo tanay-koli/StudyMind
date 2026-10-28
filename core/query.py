@@ -221,7 +221,8 @@ async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dic
             for n, h in enumerate(hits, start=1)
         )
         result["citations"] = [
-            {"source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id, "text": h.text}
+            {"source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id,
+             "score": h.score, "text": h.text}
             for h in hits
         ]
         result["sources"] = list(dict.fromkeys(h.source_title for h in hits))
