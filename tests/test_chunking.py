@@ -41,3 +41,9 @@ def test_tiny_and_blank_inputs():
     assert fixed([Block(1, None, "   ")]) == []
     assert structure([]) == []
     assert structure([Block(1, "A", "  ")]) == []
+
+
+def test_structure_never_crosses_pages():
+    # A chunk cites one page, so a section spanning pages splits at the page break
+    out = structure([Block(1, "A", "end of page one"), Block(2, "A", "start of page two")])
+    assert [(c.page, c.text) for c in out] == [(1, "end of page one"), (2, "start of page two")]

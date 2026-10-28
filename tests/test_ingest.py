@@ -42,7 +42,7 @@ class TestTextIngestion:
 
     @pytest.mark.asyncio
     async def test_ingest_text_cloud_error(self, offline):
-        """A Cognee error is reported and nothing is recorded."""
+        """A Cognee error is reported but the local index still succeeds."""
         import httpx
         from core import config
         from core.ingest import ingest_text
@@ -52,9 +52,28 @@ class TestTextIngestion:
             transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom"))
         ))
         result = await ingest_text(text="hello", title="Note")
-        assert result["status"] == "error"
-        assert "500" in result["error"]
+        assert result["status"] == "success" and result["chunk_count"] == 1
+        assert result["cognee"]["ok"] is False and "500" in result["cognee"]["error"]
+        assert [s["id"] for s in list_sources()] == [result["source_id"]]
+
+    @pytest.mark.asyncio
+    async def test_index_failure_rolls_back(self, monkeypatch):
+        """If indexing fails, no source, chunk rows or points are left behind."""
+        from sqlmodel import select
+        from core import retrieval
+        from core.db import Chunk, session
+        from core.ingest import ingest_text
+        from core.topics import list_sources
+
+        def boom(texts, *, query):
+            raise RuntimeError("embedder down")
+
+        monkeypatch.setattr(retrieval, "embed_dense", boom)
+        result = await ingest_text(text="hello", title="Note")
+        assert result["status"] == "error" and "embedder down" in result["error"]
         assert list_sources() == []
+        with session() as s:
+            assert s.exec(select(Chunk)).all() == []
 
     @pytest.mark.asyncio
     async def test_ingest_empty_text_returns_error(self):
@@ -76,6 +95,27 @@ class TestPDFIngestion:
 
         result = await ingest_pdf("/nonexistent/path/test.pdf")
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_ingest_pdf_chunks_keep_pages(self, tmp_path):
+        """Every chunk of a PDF keeps the page it came from."""
+        import pymupdf
+        from sqlmodel import select
+        from core.db import Chunk, session
+        from core.ingest import ingest_pdf
+
+        doc = pymupdf.open()
+        for i in (1, 2):
+            doc.new_page().insert_text((72, 72), f"Content of page {i}")
+        path = tmp_path / "two.pdf"
+        doc.save(path)
+        doc.close()
+
+        result = await ingest_pdf(str(path))
+        assert result["status"] == "success" and result["chunk_count"] == 2
+        with session() as s:
+            pages = s.exec(select(Chunk.page).where(Chunk.source_id == result["source_id"])).all()
+        assert sorted(pages) == [1, 2]
 
 
 class TestDatasetNaming:
