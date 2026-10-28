@@ -46,11 +46,15 @@ def parse_pdf(path: str) -> list[Block]:
     blocks: list[Block] = []
     heading: Optional[str] = None
     current: Optional[tuple[int, int]] = None
+    after_heading = False
     for page, b_idx, text, size, bold in lines:
         if size >= HEADING_SIZE_RATIO * body or (bold and len(text.split()) <= HEADING_MAX_WORDS):
-            heading = text
+            # Consecutive heading lines (title + bold key term) stay together
+            heading = f"{heading}\n{text}" if after_heading else text
+            after_heading = True
             current = None
             continue
+        after_heading = False
         if current == (page, b_idx):
             blocks[-1].text += "\n" + text
         else:

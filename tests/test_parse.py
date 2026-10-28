@@ -55,3 +55,8 @@ def test_text_blocks():
 def test_all_heading_pdf_keeps_its_text(tmp_path):
     pdf = _pdf(tmp_path, [[("Gradient descent", 11, "hebo"), ("Learning rate", 11, "hebo")]])
     assert [(b.page, b.text) for b in parse_pdf(pdf)] == [(1, "Gradient descent\nLearning rate")]
+
+
+def test_consecutive_heading_lines_are_kept_together(tmp_path):
+    pdf = _pdf(tmp_path, [[("Week 3", 20, "helv"), ("Key term: entropy", 11, "hebo"), (BODY, 11, "helv")]])
+    assert parse_pdf(pdf)[0].section_heading == "Week 3\nKey term: entropy"
