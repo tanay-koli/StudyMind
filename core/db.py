@@ -45,6 +45,23 @@ class Chunk(SQLModel, table=True):
     text: str
 
 
+class ConceptEdge(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    chunk_id: int = Field(index=True)
+    source_id: int = Field(index=True)
+    topic_id: str = Field(index=True)
+    head: str
+    relation: str
+    tail: str
+    head_norm: str = Field(index=True)
+    tail_norm: str = Field(index=True)
+
+
+class ConceptExtraction(SQLModel, table=True):
+    # A chunk has been processed, even if it yielded no triples
+    chunk_id: int = Field(primary_key=True)
+
+
 _engine: Engine | None = None
 
 
