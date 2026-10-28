@@ -48,6 +48,16 @@ def suggest(excerpt: str) -> str:
     return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
 
+def _render_citations(citations: list[dict]) -> None:
+    """One chip per cited chunk, numbered like the [n] markers; click to read the chunk."""
+    if not citations:
+        return
+    for col, (n, c) in zip(st.columns(len(citations)), enumerate(citations, start=1)):
+        label = f"[{n}] 📄 {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else "")
+        with col, st.popover(label, width="stretch"):
+            st.markdown(c["text"])
+
+
 # ---------------------------------------------------------------------------
 # Page config — MUST be the first Streamlit command
 # ---------------------------------------------------------------------------
@@ -235,16 +245,15 @@ with st.sidebar:
             background-clip: text;
         ">StudyMind</div>
         <div style="font-size: 0.8rem; color: #8b949e; margin-top: 2px;">
-            AI Study Assistant • Cognee Cloud
+            AI Study Assistant • local RAG
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # Cognee Cloud + LLM status
+    # LLM status
     for label, status in (
-        ("Cognee Cloud", st.session_state.health["cognee"]),
         (f"LLM ({settings.llm_model})", st.session_state.health["llm"]),
     ):
         st.markdown(f"**{label}:** {get_cloud_status_emoji(status)}")
@@ -530,7 +539,7 @@ with tab_ingest:
                 if ingest_topic_id:
                     form["topic_id"] = ingest_topic_id
 
-                with st.spinner("📄 Extracting text & uploading to Cognee Cloud..."):
+                with st.spinner("📄 Extracting, chunking & indexing..."):
                     result = api(
                         "POST",
                         "/ingest/pdf",
@@ -569,7 +578,7 @@ with tab_ingest:
         )
         if yt_url:
             if st.button("🎥 Ingest YouTube", key="btn_ingest_yt", use_container_width=True):
-                with st.spinner("🎥 Fetching transcript & uploading to Cognee Cloud..."):
+                with st.spinner("🎥 Fetching transcript & indexing..."):
                     result = api("POST", "/ingest/youtube", json={"url": yt_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
@@ -598,7 +607,7 @@ with tab_ingest:
         )
         if web_url:
             if st.button("🌐 Ingest Article", key="btn_ingest_web", use_container_width=True):
-                with st.spinner("🌐 Extracting article & uploading to Cognee Cloud..."):
+                with st.spinner("🌐 Extracting article & indexing..."):
                     result = api("POST", "/ingest/url", json={"url": web_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
@@ -633,7 +642,7 @@ with tab_ingest:
         )
         if note_text:
             if st.button("📝 Ingest Notes", key="btn_ingest_note", use_container_width=True):
-                with st.spinner("📝 Processing notes & uploading to Cognee Cloud..."):
+                with st.spinner("📝 Indexing notes..."):
                     result = api("POST", "/ingest/text", json={
                         "text": note_text,
                         "title": note_title or "Untitled Note",
@@ -703,8 +712,9 @@ with tab_ask:
                         st.markdown(msg["cross_section"])
                 else:
                     st.markdown(msg["content"])
-                
-                if msg.get("sources"):
+
+                _render_citations(msg.get("citations", []))
+                if msg.get("sources") and not msg.get("citations"):
                     with st.expander("📎 Sources"):
                         for src in msg["sources"]:
                             st.caption(src)
@@ -724,7 +734,7 @@ with tab_ask:
 
             # Get answer
             with st.chat_message("assistant"):
-                with st.spinner("🤔 Querying Cognee Cloud knowledge graph..."):
+                with st.spinner("🤔 Searching your material..."):
                     if selected_ask_tid == "all_topics":
                         body = {"question": question, "mode": "global"}
                     else:
@@ -755,7 +765,8 @@ with tab_ask:
                     else:
                         st.markdown(answer_text)
 
-                    if result.get("sources"):
+                    _render_citations(result.get("citations", []))
+                    if result.get("sources") and not result.get("citations"):
                         with st.expander("📎 Sources"):
                             for src in result["sources"]:
                                 st.caption(src)
@@ -769,6 +780,7 @@ with tab_ask:
                         "primary_section": result.get("primary_section", ""),
                         "cross_section": result.get("cross_section", ""),
                         "sources": result.get("sources", []),
+                        "citations": result.get("citations", []),
                     })
             st.rerun()
 
@@ -784,17 +796,14 @@ with tab_ask:
         )
         if summary_topic:
             if st.button("📋 Generate Summary", key="btn_summarize", use_container_width=True):
-                with st.spinner(f"📋 Summarizing '{summary_topic}' via Cognee Cloud..."):
+                with st.spinner(f"📋 Summarizing '{summary_topic}'..."):
                     result = api("POST", "/summarize", json={"topic": summary_topic})
 
                 if result.get("error"):
                     st.error(result["error"])
                 else:
                     st.markdown(result.get("summary", "No summary generated."))
-                    if result.get("sources_referenced"):
-                        st.markdown("**Sources referenced:**")
-                        for src in result["sources_referenced"]:
-                            st.caption(f"  • {src}")
+                    _render_citations(result.get("citations", []))
 
 
 # ========================== TAB 3: CONNECT TOPICS ==========================
@@ -840,7 +849,7 @@ with tab_connect:
                 use_container_width=True,
                 type="primary",
             ):
-                with st.spinner(f"🔗 Finding connections between '{topic_a}' and '{topic_b}' via Cognee Cloud..."):
+                with st.spinner(f"🔗 Finding connections between '{topic_a}' and '{topic_b}'..."):
                     result = api("POST", "/connect", json={"topic_a": topic_a, "topic_b": topic_b})
 
                 if result.get("error"):

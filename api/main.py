@@ -14,21 +14,24 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from core import ingest, query, topics
-from core.config import DATA_DIR, check_cognee_cloud, check_llm, http_client, set_http_client
+from core import ingest, query, retrieval, topics
+from core.config import DATA_DIR, check_llm, http_client, set_http_client
 from core.llm import setup_tracing
 
 UPLOAD_DIR = DATA_DIR / "uploads"
-FORGET_NOTE = "Source removed. Data persists in Cognee Cloud."
+FORGET_NOTE = "Source and its indexed chunks deleted."
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     topics.init_db()
     setup_tracing()
+    # Catch up after an EMBED_MODEL switch; first run with a new model embeds every chunk
+    await asyncio.to_thread(retrieval.ensure_indexed)
     yield
     await http_client().aclose()
     set_http_client(None)
+    retrieval.reset_store()  # release the embedded Qdrant file lock
 
 
 app = FastAPI(title="StudyMind API", lifespan=lifespan)
@@ -89,8 +92,7 @@ def _require_topic(topic_id: Optional[str]) -> dict:
 
 @app.get("/health")
 async def health():
-    cognee, llm = await asyncio.gather(check_cognee_cloud(timeout=5), check_llm())
-    return {"cognee": cognee, "llm": llm}
+    return {"llm": await check_llm()}
 
 
 # ---------------------------------------------------------------------------

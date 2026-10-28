@@ -72,3 +72,8 @@ data/*.mp4
 data/studymind.db
 data/uploads/
 data/audio/
+data/models/
+data/qdrant/
+
+# Eval outputs
+eval/results/
