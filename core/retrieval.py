@@ -135,11 +135,16 @@ def _ensure_collection() -> str:
     return name
 
 
+def _search_text(c: Chunk) -> str:
+    """What gets embedded and reranked: the heading often names the topic the body never repeats."""
+    return f"{c.section_heading}\n{c.text}" if c.section_heading else c.text
+
+
 def _upsert(chunks: list[Chunk]) -> None:
     name = _ensure_collection()
     for i in range(0, len(chunks), _BATCH):
         batch = chunks[i:i + _BATCH]
-        texts = [c.text for c in batch]
+        texts = [_search_text(c) for c in batch]
         dense = embed_dense(texts, query=False)
         sparse = embed_sparse(texts, query=False)
         points = [
@@ -276,7 +281,7 @@ class HybridRetriever:
             ).all()
         if not rows:
             return []
-        scores = rerank(query, [c.text for c, _ in rows])
+        scores = rerank(query, [_search_text(c) for c, _ in rows])
         ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
         return [
             Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score))

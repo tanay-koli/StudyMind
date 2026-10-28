@@ -157,3 +157,15 @@ def test_ensure_indexed_fills_gaps_after_model_switch(monkeypatch):
     monkeypatch.setattr(settings, "embed_model", "bge-small")
     retrieval.ensure_indexed()  # back to old model: missing the source added under nomic
     assert (_count(collection="chunks_bge_small"), _count(collection="chunks_nomic")) == (2, 2)
+
+
+@pytest.mark.asyncio
+async def test_heading_text_is_searchable():
+    # Slide titles carry the topic; the body may never repeat it
+    retrieval.index_chunks(_src(), "general", [
+        Block(1, "Optimisers", "momentum and adaptive steps"),
+        Block(2, "Backpropagation", "chain rule applied layer by layer"),
+    ])
+    hits = await retrieval.HybridRetriever().retrieve("backpropagation", "general", k=1)
+    assert hits[0].section == "Backpropagation"
+    assert hits[0].text == "chain rule applied layer by layer"  # citation text stays the body
