@@ -254,7 +254,9 @@ class Hit:
 
 
 class Retriever(Protocol):
-    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]: ...
+    async def retrieve(
+        self, query: str, topic_id: Optional[str], k: int = 6, rerank_query: Optional[str] = None,
+    ) -> list[Hit]: ...
 
 
 def rrf(rankings: list[list[int]], k: int = RRF_K) -> list[int]:
@@ -287,10 +289,12 @@ def _hit(c: Chunk, title: str, score: float) -> Hit:
 class HybridRetriever:
     """Dense + BM25, fused with RRF, then reranked with a cross-encoder."""
 
-    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]:
-        return await asyncio.to_thread(self._search, query, topic_id, k)
+    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6,
+                       rerank_query: Optional[str] = None) -> list[Hit]:
+        return await asyncio.to_thread(self._search, query, topic_id, k, rerank_query)
 
-    def _search(self, query: str, topic_id: Optional[str], k: int) -> list[Hit]:
+    def _search(self, query: str, topic_id: Optional[str], k: int,
+                rerank_query: Optional[str] = None) -> list[Hit]:
         name = collection_name()
         client = store()
         with _lock:
@@ -311,7 +315,7 @@ class HybridRetriever:
         rows = _hydrate(fused) if fused else []
         if not rows:
             return []
-        scores = rerank(query, [_search_text(c) for c, _ in rows])
+        scores = rerank(rerank_query or query, [_search_text(c) for c, _ in rows])
         ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
         return [_hit(c, title, score) for (c, title), score in ranked]
 
@@ -319,10 +323,12 @@ class HybridRetriever:
 class DenseRetriever:
     """Baseline for the eval: dense vectors only, no BM25, fusion or rerank."""
 
-    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]:
-        return await asyncio.to_thread(self._search, query, topic_id, k)
+    async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6,
+                       rerank_query: Optional[str] = None) -> list[Hit]:
+        return await asyncio.to_thread(self._search, query, topic_id, k, rerank_query)
 
-    def _search(self, query: str, topic_id: Optional[str], k: int) -> list[Hit]:
+    def _search(self, query: str, topic_id: Optional[str], k: int,
+                rerank_query: Optional[str] = None) -> list[Hit]:
         name = collection_name()
         client = store()
         vector = embed_dense([query], query=True)[0]
@@ -339,4 +345,9 @@ class DenseRetriever:
 
 
 def get_retriever() -> Retriever:
-    return DenseRetriever() if settings.retriever == "dense" else HybridRetriever()
+    base = DenseRetriever() if settings.retriever == "dense" else HybridRetriever()
+    if settings.query_rewrite == "none":
+        return base
+    from core.rewrite import RewritingRetriever  # rewrite imports this module
+
+    return RewritingRetriever(base, settings.query_rewrite)
