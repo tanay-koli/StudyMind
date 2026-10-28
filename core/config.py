@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
-    # Retrieval: "structure" | "fixed"
-    chunker: str = "structure"
+    # Retrieval
+    chunker: str = "structure"  # structure | fixed
+    embed_model: str = "bge-small"  # bge-small | nomic
+    retriever: str = "hybrid"  # hybrid | cognee
+    qdrant_path: str = (DATA_DIR / "qdrant").as_posix()  # ":memory:" in tests
 
     # Where the Streamlit UI finds the API
     api_url: str = "http://localhost:8000"

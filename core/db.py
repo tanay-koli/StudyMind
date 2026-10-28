@@ -35,6 +35,18 @@ class Source(SQLModel, table=True):
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
+class Chunk(SQLModel, table=True):
+    # Also the Qdrant point id
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source_id: int = Field(foreign_key="source.id", index=True)
+    topic_id: str = Field(index=True)
+    chunker: str
+    ord: int
+    page: Optional[int] = None
+    section_heading: Optional[str] = None
+    text: str
+
+
 _engine: Engine | None = None
 
 
