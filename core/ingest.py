@@ -1,16 +1,12 @@
 """
-StudyMind — Data Ingestion (Cognee Cloud)
+StudyMind — Data Ingestion
 
-Async-compatible functions to ingest study material from four source types
-into the local index (and Cognee Cloud). Each function:
-  1. Parses the source into plain text (locally, unchanged)
-  2. POSTs the text as a file upload to POST /api/v1/remember
-     using topic_id as the datasetName (enables scoped recall)
-  3. Records the source in the SQLite source table
+Async functions to ingest study material from four source types. Each function:
+  1. Parses the source locally (PDFs keep page and section heading)
+  2. Records the source in SQLite, chunks it and indexes the chunks in Qdrant
+  3. Uploads the text to Cognee Cloud (POST /api/v1/remember, datasetName =
+     topic_id) as the eval baseline; best-effort, a failure does not fail ingest
   4. Returns a status dict for the UI
-
-The Cognee Cloud handles chunking, embedding, and graph construction
-server-side — no local LLM or DB required.
 """
 
 import asyncio

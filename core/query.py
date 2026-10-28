@@ -1,9 +1,9 @@
 """
-StudyMind — Query Module (Cognee Cloud)
+StudyMind — Query Module
 
-Five core query functions that use the Cognee Cloud REST API:
-  1. ask()              — Q&A via POST /api/v1/recall (GRAPH_COMPLETION)
-  2. ask_scoped()       — Q&A scoped to a single topic (datasets filter)
+Five core query functions:
+  1. ask()              — Q&A over all material: our retriever + local LLM, with citations
+  2. ask_scoped()       — the same, filtered to one topic
   3. cross_topic_ask()  — primary topic Q&A + cross-topic connections
   4. connect_topics()   — relationship discovery (two CHUNKS recalls + synthesis)
   5. summarize_topic()  — cross-source summary (HYBRID_COMPLETION)
@@ -28,6 +28,8 @@ from typing import Optional
 import httpx
 
 from core.config import settings, _headers, http_client
+from core.llm import llm
+from core.retrieval import get_retriever
 from core.graph_utils import (
     parse_search_results,
     build_connection_graph,
@@ -189,104 +191,73 @@ def _extract_sources_from_recall(data) -> list[str]:
 # Public query functions
 # ---------------------------------------------------------------------------
 
-async def ask(question: str) -> dict:
-    """Ask a question and get an answer synthesized across all ingested sources.
+ANSWER_SYSTEM = (
+    "You are a study assistant. Answer only from the numbered context passages.\n"
+    "Cite the passage for every claim with its number in square brackets, like [2].\n"
+    "If the context does not contain the answer, reply exactly: This isn't in your material."
+)
 
-    Uses GRAPH_COMPLETION (graph-backed reasoning) via Cognee Cloud.
 
-    Args:
-        question: Natural language question.
-
-    Returns:
-        dict with keys: answer, sources, search_type, error
-    """
+async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dict:
+    """Retrieve chunks, then generate a grounded answer that cites them as [n]."""
+    retriever = get_retriever()
     result = {
         "answer": "",
         "sources": [],
-        "search_type": "GRAPH_COMPLETION",
+        "citations": [],
+        "search_type": "COGNEE_CHUNKS" if settings.retriever == "cognee" else "HYBRID",
         "error": None,
     }
-
-    # Primary: GRAPH_COMPLETION
-    recall = await _recall(question, search_type="GRAPH_COMPLETION")
-    if recall["ok"] and recall["data"]:
-        texts = _extract_text_from_recall(recall["data"])
-        sources = _extract_sources_from_recall(recall["data"])
-        if texts:
-            result["answer"] = "\n\n".join(texts)
-            result["sources"] = sources
+    try:
+        hits = await retriever.retrieve(question, topic_id)
+        if not hits:
+            result["answer"] = empty_msg
             return result
-
-    if not recall["ok"]:
-        # Fallback: HYBRID_COMPLETION
-        recall2 = await _recall(question, search_type="HYBRID_COMPLETION")
-        result["search_type"] = "HYBRID_COMPLETION (fallback)"
-        if recall2["ok"] and recall2["data"]:
-            texts = _extract_text_from_recall(recall2["data"])
-            if texts:
-                result["answer"] = "\n\n".join(texts)
-                result["sources"] = _extract_sources_from_recall(recall2["data"])
-                return result
-        # Both failed
-        result["error"] = recall.get("error") or recall2.get("error")
-        return result
-
-    result["answer"] = (
-        "No results found. Try ingesting more material or rephrasing your question."
-    )
+        context = "\n\n".join(
+            f"[{n}] {h.source_title}"
+            + (f", p.{h.page}" if h.page else "")
+            + (f" — {h.section}" if h.section else "")
+            + f"\n{h.text}"
+            for n, h in enumerate(hits, start=1)
+        )
+        result["citations"] = [
+            {"source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id, "text": h.text}
+            for h in hits
+        ]
+        result["sources"] = list(dict.fromkeys(h.source_title for h in hits))
+        result["answer"] = await llm.complete(f"{context}\n\nQuestion: {question}", system=ANSWER_SYSTEM)
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
     return result
 
 
-async def ask_scoped(question: str, topic_id: str) -> dict:
-    """Ask a question scoped to a single topic's datasets.
-
-    Uses datasets=[topic_id] to restrict Cognee Cloud recall to only the
-    data uploaded under that topic. Falls back to global recall if scoped
-    recall returns nothing.
-
-    Args:
-        question: Natural language question.
-        topic_id: Topic ID whose datasets to search within.
+async def ask(question: str) -> dict:
+    """Answer from all ingested material.
 
     Returns:
-        dict with keys: answer, sources, search_type, topic_id, error
+        dict with keys: answer, sources, citations, search_type, error
     """
-    from core.topics import get_topic_datasets, load_topics
-
-    result = {
-        "answer": "",
-        "sources": [],
-        "search_type": "GRAPH_COMPLETION (scoped)",
-        "topic_id": topic_id,
-        "error": None,
-    }
-
-    datasets = get_topic_datasets(topic_id)
-    topics = load_topics()
-    topic_name = topics.get(topic_id, {}).get("name", topic_id)
-
-    # Scoped recall using datasets filter
-    recall = await _recall(
-        question,
-        search_type="GRAPH_COMPLETION",
-        datasets=datasets if datasets else None,
+    return await _answer(
+        question, None,
+        "No results found. Try ingesting more material or rephrasing your question.",
     )
 
-    if recall["ok"] and recall["data"]:
-        texts = _extract_text_from_recall(recall["data"])
-        if texts:
-            result["answer"] = "\n\n".join(texts)
-            result["sources"] = _extract_sources_from_recall(recall["data"])
-            return result
 
-    if not recall["ok"]:
-        result["error"] = recall.get("error")
+async def ask_scoped(question: str, topic_id: str) -> dict:
+    """Answer from one topic's material only.
 
-    if not result["answer"]:
-        result["answer"] = (
-            f"No results found in **{topic_name}**. "
-            "Try adding more material to this topic or asking a broader question."
-        )
+    Returns:
+        dict with keys: answer, sources, citations, search_type, topic_id, error
+    """
+    from core.topics import load_topics
+
+    topic_name = load_topics().get(topic_id, {}).get("name", topic_id)
+    result = await _answer(
+        question, topic_id,
+        f"No results found in **{topic_name}**. "
+        "Try adding more material to this topic or asking a broader question.",
+    )
+    result["topic_id"] = topic_id
     return result
 
 

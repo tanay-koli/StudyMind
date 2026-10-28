@@ -15,9 +15,10 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def _pdf_bytes(text: str) -> bytes:
+def _pdf_bytes(*pages: str) -> bytes:
     doc = fitz.open()
-    doc.new_page().insert_text((72, 72), text)
+    for text in pages:
+        doc.new_page().insert_text((72, 72), text)
     data = doc.tobytes()
     doc.close()
     return data
@@ -47,7 +48,10 @@ def test_full_flow(client, offline):
     ):
         resp = client.post("/ask", json=body)
         assert resp.status_code == 200
-        assert "Self-attention" in resp.json()["answer"]
+        if body["mode"] == "cross":  # still Cognee until Phase 2
+            assert "Self-attention" in resp.json()["answer"]
+        else:
+            assert resp.json()["citations"][0]["source_title"] == "Lecture 1"
 
     guide = client.post(f"/topics/{tid}/study-guide").json()["guide"]
     recalls = offline.count("/api/v1/recall")
@@ -102,3 +106,33 @@ def test_delete_topic(client):
     tid = client.post("/topics", json={"name": "Temp"}).json()["id"]
     assert client.delete(f"/topics/{tid}").status_code == 200
     assert client.delete("/topics/general").status_code == 400
+
+
+def test_scoped_answer_cites_pages(client):
+    tid = client.post("/topics", json={"name": "ML"}).json()["id"]
+    client.post("/ingest/pdf", data={"topic_id": tid}, files={
+        "file": ("notes.pdf", _pdf_bytes("Linear algebra basics", "Gradient descent minimises the loss"), "application/pdf"),
+    })
+    body = client.post("/ask", json={"question": "gradient descent", "mode": "scoped", "topic_id": tid}).json()
+    top = body["citations"][0]
+    assert (top["source_title"], top["page"]) == ("notes.pdf", 2)
+    assert top["chunk_id"] and "Gradient descent" in top["text"]
+    assert body["sources"] == ["notes.pdf"] and body["error"] is None
+
+
+def test_ask_empty_topic_no_results(client):
+    tid = client.post("/topics", json={"name": "Empty"}).json()["id"]
+    body = client.post("/ask", json={"question": "q", "mode": "scoped", "topic_id": tid}).json()
+    assert body["citations"] == [] and "No results found" in body["answer"]
+
+
+def test_ask_llm_down(client, monkeypatch):
+    from core.llm import llm
+
+    async def down(prompt, system=None, **kw):
+        raise RuntimeError("ollama not running")
+
+    monkeypatch.setattr(llm, "complete", down)
+    client.post("/ingest/text", json={"text": "Self-attention", "title": "L1", "topic_id": "general"})
+    resp = client.post("/ask", json={"question": "attention", "mode": "global"})
+    assert resp.status_code == 200 and "RuntimeError" in resp.json()["error"]
