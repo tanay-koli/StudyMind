@@ -1,5 +1,6 @@
 """StudyMind — chunk store and retrievers (embedded Qdrant :memory:, fake models)."""
 
+import pytest
 from qdrant_client import models
 from sqlmodel import select
 
@@ -7,6 +8,7 @@ from core import retrieval, topics
 from core.config import settings
 from core.db import Chunk, session
 from core.parse import Block
+from tests.conftest import RECALL_TEXT
 
 
 def _src(topic_id="general", title="Doc"):
@@ -60,3 +62,55 @@ def test_move_updates_payload():
     retrieval.index_chunks(sid, "general", [Block(1, None, "alpha")])
     retrieval.move_source_points(sid, t2)
     assert (_count("general"), _count(t2)) == (0, 1)
+
+
+# ---------------------------------------------------------------------------
+# Retrievers
+# ---------------------------------------------------------------------------
+
+def test_rrf():
+    # 3: 1/63 + 1/61 > 2: 2/62 > 1: 1/61 > 4: 1/63
+    assert retrieval.rrf([[1, 2, 3], [3, 2, 4]]) == [3, 2, 1, 4]
+
+
+def _two_topics():
+    t1 = topics.create_topic("T1")["id"]
+    t2 = topics.create_topic("T2")["id"]
+    retrieval.index_chunks(_src(t1), t1, [
+        Block(4, "Attention", "self attention weighs tokens"),
+        Block(5, "RNN", "recurrent hidden state"),
+    ])
+    retrieval.index_chunks(_src(t2, "Other"), t2, [Block(9, None, "attention in vision transformers")])
+    return t1, t2
+
+
+@pytest.mark.asyncio
+async def test_hybrid_returns_relevant_chunk_with_page():
+    t1, _ = _two_topics()
+    hits = await retrieval.HybridRetriever().retrieve("what is self attention", t1, k=1)
+    assert [(h.page, h.section, h.source_title) for h in hits] == [(4, "Attention", "Doc")]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_topic_none_searches_all_topics():
+    _two_topics()
+    hits = await retrieval.HybridRetriever().retrieve("attention", None)
+    assert {h.source_title for h in hits} == {"Doc", "Other"}
+
+
+@pytest.mark.asyncio
+async def test_hybrid_empty_store_returns_empty():
+    assert await retrieval.HybridRetriever().retrieve("anything", "general") == []
+
+
+@pytest.mark.asyncio
+async def test_cognee_retriever_uses_chunks_search(offline):
+    hits = await retrieval.CogneeRetriever().retrieve("q", None)
+    assert [(h.text, h.page, h.source_title) for h in hits] == [(RECALL_TEXT, None, "transformers")]
+    assert "/api/v1/recall" in offline
+
+
+def test_get_retriever(monkeypatch):
+    assert isinstance(retrieval.get_retriever(), retrieval.HybridRetriever)
+    monkeypatch.setattr(settings, "retriever", "cognee")
+    assert isinstance(retrieval.get_retriever(), retrieval.CogneeRetriever)
