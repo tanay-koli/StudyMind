@@ -26,6 +26,8 @@ FORGET_NOTE = "Source and its indexed chunks deleted. Data uploaded to Cognee Cl
 async def lifespan(app: FastAPI):
     topics.init_db()
     setup_tracing()
+    # Catch up after an EMBED_MODEL switch; first run with a new model embeds every chunk
+    await asyncio.to_thread(retrieval.ensure_indexed)
     yield
     await http_client().aclose()
     set_http_client(None)

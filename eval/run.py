@@ -25,9 +25,7 @@ async def run(dataset: Path, out_dir: Path, retriever: str, embed: str) -> Path:
     settings.embed_model = embed
     init_db()
     if retriever == "hybrid":
-        name = retrieval.collection_name()
-        if not retrieval.store().collection_exists(name) or retrieval.store().count(name).count == 0:
-            retrieval.reindex()
+        retrieval.ensure_indexed()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{retriever}-{embed}-{date.today().isoformat()}.jsonl"

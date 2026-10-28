@@ -181,6 +181,17 @@ def reindex() -> int:
     return len(rows)
 
 
+def ensure_indexed() -> None:
+    """Reindex when the current model's collection is missing chunks (e.g. after switching EMBED_MODEL)."""
+    with session() as s:
+        rows = len(s.exec(select(Chunk.id)).all())
+    name = collection_name()
+    with _lock:
+        points = store().count(name).count if store().collection_exists(name) else 0
+    if points != rows:
+        reindex()
+
+
 def _source_filter(source_ids: list[int]) -> models.FilterSelector:
     return models.FilterSelector(filter=models.Filter(must=[
         models.FieldCondition(key="source_id", match=models.MatchAny(any=source_ids)),
