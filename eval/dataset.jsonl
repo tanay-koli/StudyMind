@@ -1,0 +1,3 @@
+{"id": "q001", "question": "EXAMPLE: What does gradient descent step against?", "topic_id": "general", "expected_source": "<source title>", "expected_pages": [2], "reference_answer": "EXAMPLE — replace: the gradient of the loss, scaled by the learning rate."}
+{"id": "q002", "question": "EXAMPLE: What do query, key and value projections do in self-attention?", "topic_id": "general", "expected_source": "<source title>", "expected_pages": [3], "reference_answer": "EXAMPLE — replace."}
+{"id": "q003", "question": "EXAMPLE: Which section of my notes covers eigenvectors?", "topic_id": "general", "expected_source": "<source title>", "expected_pages": [1], "reference_answer": "EXAMPLE — replace."}
