@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
+    # Retrieval: "structure" | "fixed"
+    chunker: str = "structure"
+
     # Where the Streamlit UI finds the API
     api_url: str = "http://localhost:8000"
 
