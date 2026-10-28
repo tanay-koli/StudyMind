@@ -31,10 +31,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from sqlmodel import delete, select
+from sqlmodel import delete, select, update
 
+from core import retrieval
 from core.config import settings, DATA_DIR, _headers, http_client
-from core.db import Source, Topic, session
+from core.db import Chunk, Source, Topic, session
 from core.llm import llm
 
 # ---------------------------------------------------------------------------
@@ -170,6 +171,7 @@ def delete_topic(topic_id: str) -> bool:
         topic = s.get(Topic, topic_id)
         if topic is None:
             return False
+        _purge(s, s.exec(select(Source.id).where(Source.topic_id == topic_id)).all())
         s.exec(delete(Source).where(Source.topic_id == topic_id))
         s.delete(topic)
         s.commit()
@@ -192,6 +194,12 @@ def invalidate_caches(topic_id: str) -> None:
 # Sources
 # ---------------------------------------------------------------------------
 
+def _purge(s, source_ids: list[int]) -> None:
+    """Delete the sources' Qdrant points and chunk rows (caller commits)."""
+    retrieval.delete_source_points(list(source_ids))
+    s.exec(delete(Chunk).where(Chunk.source_id.in_(source_ids)))
+
+
 def add_source(topic_id: str, dataset_name: str, source_type: str, title: str) -> dict:
     """Record an ingested source and invalidate the topic's caches."""
     src = Source(topic_id=topic_id, dataset_name=dataset_name, source_type=source_type, title=title)
@@ -211,7 +219,7 @@ def list_sources(topic_id: Optional[str] = None) -> list[dict]:
 
 
 def move_source(source_id: int, topic_id: str) -> Optional[dict]:
-    """Reassign a source to another topic (the Cognee dataset stays the same)."""
+    """Reassign a source and its chunks to another topic (the Cognee dataset stays the same)."""
     with session() as s:
         src = s.get(Source, source_id)
         if src is None or s.get(Topic, topic_id) is None:
@@ -219,6 +227,8 @@ def move_source(source_id: int, topic_id: str) -> Optional[dict]:
         old_topic = src.topic_id
         src.topic_id = topic_id
         s.add(src)
+        s.exec(update(Chunk).where(Chunk.source_id == source_id).values(topic_id=topic_id))
+        retrieval.move_source_points(source_id, topic_id)
         s.commit()
     invalidate_caches(old_topic)
     invalidate_caches(topic_id)
@@ -226,11 +236,12 @@ def move_source(source_id: int, topic_id: str) -> Optional[dict]:
 
 
 def delete_source(source_id: int) -> Optional[dict]:
-    """Remove a source row. Cognee Cloud data is not deleted (no delete API yet)."""
+    """Remove a source, its chunks and Qdrant points. Cognee Cloud data is not deleted (no delete API yet)."""
     with session() as s:
         src = s.get(Source, source_id)
         if src is None:
             return None
+        _purge(s, [source_id])
         s.delete(src)
         s.commit()
     invalidate_caches(src.topic_id)
@@ -240,7 +251,9 @@ def delete_source(source_id: int) -> Optional[dict]:
 def delete_all_sources() -> int:
     with session() as s:
         topic_ids = s.exec(select(Topic.id)).all()
-        count = len(s.exec(select(Source.id)).all())
+        source_ids = s.exec(select(Source.id)).all()
+        count = len(source_ids)
+        _purge(s, source_ids)
         s.exec(delete(Source))
         s.commit()
     for tid in topic_ids:

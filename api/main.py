@@ -14,12 +14,12 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from core import ingest, query, topics
+from core import ingest, query, retrieval, topics
 from core.config import DATA_DIR, check_cognee_cloud, check_llm, http_client, set_http_client
 from core.llm import setup_tracing
 
 UPLOAD_DIR = DATA_DIR / "uploads"
-FORGET_NOTE = "Source removed. Data persists in Cognee Cloud."
+FORGET_NOTE = "Source and its indexed chunks deleted. Data uploaded to Cognee Cloud persists."
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     yield
     await http_client().aclose()
     set_http_client(None)
+    retrieval.reset_store()  # release the embedded Qdrant file lock
 
 
 app = FastAPI(title="StudyMind API", lifespan=lifespan)
