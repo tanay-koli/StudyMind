@@ -30,7 +30,7 @@ from sqlmodel import delete, select, update
 
 from core import query, retrieval, studyguide
 from core.config import DATA_DIR
-from core.db import Chunk, Source, Topic, session
+from core.db import Chunk, ConceptEdge, ConceptExtraction, Source, Topic, session
 from core.llm import llm
 
 # ---------------------------------------------------------------------------
@@ -177,6 +177,9 @@ def invalidate_caches(topic_id: str) -> None:
 def _purge(s, source_ids: list[int]) -> None:
     """Delete the sources' Qdrant points and chunk rows (caller commits)."""
     retrieval.delete_source_points(list(source_ids))
+    chunk_ids = s.exec(select(Chunk.id).where(Chunk.source_id.in_(source_ids))).all()
+    s.exec(delete(ConceptEdge).where(ConceptEdge.chunk_id.in_(chunk_ids)))
+    s.exec(delete(ConceptExtraction).where(ConceptExtraction.chunk_id.in_(chunk_ids)))
     s.exec(delete(Chunk).where(Chunk.source_id.in_(source_ids)))
 
 
@@ -208,6 +211,7 @@ def move_source(source_id: int, topic_id: str) -> Optional[dict]:
         src.topic_id = topic_id
         s.add(src)
         s.exec(update(Chunk).where(Chunk.source_id == source_id).values(topic_id=topic_id))
+        s.exec(update(ConceptEdge).where(ConceptEdge.source_id == source_id).values(topic_id=topic_id))
         retrieval.move_source_points(source_id, topic_id)
         s.commit()
     invalidate_caches(old_topic)

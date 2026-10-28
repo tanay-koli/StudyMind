@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 import pytest
+from sqlmodel import select
 
 from core import db, query, topics
 from core.llm import llm
@@ -38,6 +39,37 @@ def test_move_source_between_topics():
     assert topics.move_source(src["id"], b)["topic_id"] == b
     assert topics.list_sources(a) == []
     assert topics.move_source(src["id"], "missing") is None
+
+
+def _source_with_concepts(topic_id):
+    with db.session() as s:
+        src = db.Source(topic_id=topic_id, source_type="note", title="n")
+        s.add(src)
+        s.commit()
+        ch = db.Chunk(source_id=src.id, topic_id=topic_id, chunker="x", ord=0, text="t")
+        s.add(ch)
+        s.commit()
+        s.add(db.ConceptEdge(chunk_id=ch.id, source_id=src.id, topic_id=topic_id, head="a", relation="r",
+                             tail="b", head_norm="a", tail_norm="b"))
+        s.add(db.ConceptExtraction(chunk_id=ch.id))
+        s.commit()
+        return src.id
+
+
+def test_delete_source_purges_concepts():
+    sid = _source_with_concepts(topics.GENERAL_TOPIC_ID)
+    topics.delete_source(sid)
+    with db.session() as s:
+        assert s.exec(select(db.ConceptEdge)).first() is None
+        assert s.exec(select(db.ConceptExtraction)).first() is None
+
+
+def test_move_source_moves_concepts():
+    b = topics.create_topic("B")["id"]
+    sid = _source_with_concepts(topics.GENERAL_TOPIC_ID)
+    topics.move_source(sid, b)
+    with db.session() as s:
+        assert s.exec(select(db.ConceptEdge)).one().topic_id == b
 
 
 def test_delete_topic_removes_its_sources():
