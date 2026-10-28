@@ -3,6 +3,7 @@ Shared fixtures: every test runs offline against a temp SQLite DB, a mocked
 Cognee Cloud / Ollama (httpx.MockTransport) and a fake LLM.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -13,7 +14,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core import config, db, topics  # noqa: E402
+from core import chunking, config, db, topics  # noqa: E402
 from core.llm import llm  # noqa: E402
 
 RECALL_TEXT = "Self-attention lets each token attend to every other token."
@@ -50,6 +51,8 @@ def offline(tmp_path, monkeypatch):
         return "Transformer Models"
 
     monkeypatch.setattr(llm, "complete", fake_complete)
+    # Whitespace tokens instead of the bge tokenizer (no download)
+    monkeypatch.setattr(chunking, "token_spans", lambda t: [m.span() for m in re.finditer(r"\S+", t)])
 
     db.reset_engine()
     config.set_http_client(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
