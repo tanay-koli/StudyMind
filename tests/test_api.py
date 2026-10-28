@@ -5,7 +5,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.main
-from core import topics
+from sqlmodel import select
+
+from core import retrieval, topics
+from core.db import Chunk, session
 
 
 @pytest.fixture
@@ -136,3 +139,40 @@ def test_ask_llm_down(client, monkeypatch):
     client.post("/ingest/text", json={"text": "Self-attention", "title": "L1", "topic_id": "general"})
     resp = client.post("/ask", json={"question": "attention", "mode": "global"})
     assert resp.status_code == 200 and "RuntimeError" in resp.json()["error"]
+
+
+def _ingest(client, tid, text="Photosynthesis converts light into chemical energy"):
+    return client.post("/ingest/text", json={"text": text, "title": "Bio", "topic_id": tid}).json()["source_id"]
+
+
+def _cited(client, tid=None):
+    body = {"question": "photosynthesis light", "mode": "scoped" if tid else "global"}
+    if tid:
+        body["topic_id"] = tid
+    return [c["source_title"] for c in client.post("/ask", json=body).json()["citations"]]
+
+
+@pytest.mark.parametrize("how", ["source", "topic", "all"])
+def test_deleted_source_never_retrieved(client, how):
+    tid = client.post("/topics", json={"name": "Biology"}).json()["id"]
+    sid = _ingest(client, tid)
+    assert _cited(client) == ["Bio"]
+    if how == "source":
+        client.delete(f"/sources/{sid}")
+    elif how == "topic":
+        client.delete(f"/topics/{tid}")
+    else:
+        client.delete("/sources")
+    assert _cited(client) == []
+    # Really gone, not just hidden by the join to Source
+    with session() as s:
+        assert s.exec(select(Chunk)).all() == []
+    assert retrieval.store().count(retrieval.collection_name()).count == 0
+
+
+def test_moved_source_retrieved_only_in_new_topic(client):
+    t1 = client.post("/topics", json={"name": "Biology"}).json()["id"]
+    t2 = client.post("/topics", json={"name": "Chemistry"}).json()["id"]
+    sid = _ingest(client, t1)
+    client.patch(f"/sources/{sid}", json={"topic_id": t2})
+    assert (_cited(client, t1), _cited(client, t2)) == ([], ["Bio"])

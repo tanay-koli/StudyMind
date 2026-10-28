@@ -17,12 +17,9 @@ from typing import Optional
 
 import httpx
 
-from sqlmodel import delete
-
 from core import retrieval
 from core.chunking import chunk
 from core.config import settings, _headers, http_client
-from core.db import Chunk, session
 from core.parse import Block, parse_pdf, text_blocks
 from core.topics import GENERAL_TOPIC_ID, add_source, delete_source
 
@@ -133,11 +130,7 @@ async def _store(result: dict, full_text: str, blocks: list[Block]) -> None:
             lambda: retrieval.index_chunks(sid, result["topic_id"], chunk(blocks))
         )
     except Exception as exc:
-        # Roll back so a failed source never half-exists
-        retrieval.delete_source_points([sid])
-        with session() as s:
-            s.exec(delete(Chunk).where(Chunk.source_id == sid))
-            s.commit()
+        # Roll back so a failed source never half-exists (also purges its chunks)
         delete_source(sid)
         result.pop("source_id")
         result["status"] = "error"
