@@ -2,7 +2,7 @@
 StudyMind — Data Ingestion (Cognee Cloud)
 
 Async-compatible functions to ingest study material from four source types
-into the Cognee Cloud knowledge graph. Each function:
+into the local index (and Cognee Cloud). Each function:
   1. Parses the source into plain text (locally, unchanged)
   2. POSTs the text as a file upload to POST /api/v1/remember
      using topic_id as the datasetName (enables scoped recall)
@@ -21,8 +21,14 @@ from typing import Optional
 
 import httpx
 
+from sqlmodel import delete
+
+from core import retrieval
+from core.chunking import chunk
 from core.config import settings, _headers, http_client
-from core.topics import GENERAL_TOPIC_ID, add_source
+from core.db import Chunk, session
+from core.parse import Block, parse_pdf, text_blocks
+from core.topics import GENERAL_TOPIC_ID, add_source, delete_source
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +128,32 @@ def _register_in_topic(result: dict) -> None:
     result["source_id"] = src["id"]
 
 
+async def _store(result: dict, full_text: str, blocks: list[Block]) -> None:
+    """Register the source and index its chunks; then upload to Cognee best-effort."""
+    _register_in_topic(result)
+    sid = result["source_id"]
+    try:
+        result["chunk_count"] = await asyncio.to_thread(
+            lambda: retrieval.index_chunks(sid, result["topic_id"], chunk(blocks))
+        )
+    except Exception as exc:
+        # Roll back so a failed source never half-exists
+        retrieval.delete_source_points([sid])
+        with session() as s:
+            s.exec(delete(Chunk).where(Chunk.source_id == sid))
+            s.commit()
+        delete_source(sid)
+        result.pop("source_id")
+        result["status"] = "error"
+        result["error"] = f"Indexing failed: {type(exc).__name__}: {exc}"
+        return
+
+    upload = await _upload_to_cloud(full_text, result["dataset_name"])
+    result["cognee"] = {"ok": upload["ok"], "error": upload.get("error")}
+    result["status"] = "success"
+    result["excerpt"] = full_text[:500]
+
+
 # ---------------------------------------------------------------------------
 # Public ingestion functions
 # ---------------------------------------------------------------------------
@@ -131,7 +163,7 @@ async def ingest_pdf(
     title: Optional[str] = None,
     topic_id: Optional[str] = None,
 ) -> dict:
-    """Ingest a PDF file into the Cognee Cloud knowledge graph.
+    """Ingest a PDF file into the local index (and Cognee Cloud).
 
     Args:
         file_path: Path to the PDF file on disk.
@@ -177,15 +209,8 @@ async def ingest_pdf(
 
         full_text = f"Source: PDF — {title}\n\n" + "\n\n".join(pages_text)
 
-        upload = await _upload_to_cloud(full_text, upload_dataset)
-        if upload["ok"]:
-            result["status"] = "success"
-            result["page_count"] = len(pages_text)
-            result["excerpt"] = full_text[:500]
-            _register_in_topic(result)
-        else:
-            result["status"] = "error"
-            result["error"] = upload["error"]
+        result["page_count"] = len(pages_text)
+        await _store(result, full_text, await asyncio.to_thread(parse_pdf, file_path))
 
     except Exception as exc:
         result["status"] = "error"
@@ -198,7 +223,7 @@ async def ingest_youtube(
     url: str,
     topic_id: Optional[str] = None,
 ) -> dict:
-    """Ingest a YouTube video transcript into the Cognee Cloud knowledge graph.
+    """Ingest a YouTube video transcript into the local index (and Cognee Cloud).
 
     Args:
         url: YouTube video URL.
@@ -261,14 +286,7 @@ async def ingest_youtube(
             + " ".join(lines)
         )
 
-        upload = await _upload_to_cloud(full_text, upload_dataset)
-        if upload["ok"]:
-            result["status"] = "success"
-            result["excerpt"] = full_text[:500]
-            _register_in_topic(result)
-        else:
-            result["status"] = "error"
-            result["error"] = upload["error"]
+        await _store(result, full_text, text_blocks(" ".join(lines)))
 
     except Exception as exc:
         result["status"] = "error"
@@ -282,7 +300,7 @@ async def ingest_url(
     title: Optional[str] = None,
     topic_id: Optional[str] = None,
 ) -> dict:
-    """Ingest a web article into the Cognee Cloud knowledge graph.
+    """Ingest a web article into the local index (and Cognee Cloud).
 
     Args:
         url: Web article URL.
@@ -342,14 +360,7 @@ async def ingest_url(
             f"Source: Web Article — {result['title']}\nURL: {url}\n\n" + extracted
         )
 
-        upload = await _upload_to_cloud(full_text, upload_dataset)
-        if upload["ok"]:
-            result["status"] = "success"
-            result["excerpt"] = full_text[:500]
-            _register_in_topic(result)
-        else:
-            result["status"] = "error"
-            result["error"] = upload["error"]
+        await _store(result, full_text, text_blocks(extracted))
 
     except Exception as exc:
         result["status"] = "error"
@@ -363,7 +374,7 @@ async def ingest_text(
     title: str = "Untitled Note",
     topic_id: Optional[str] = None,
 ) -> dict:
-    """Ingest typed/pasted notes into the Cognee Cloud knowledge graph.
+    """Ingest typed/pasted notes into the local index (and Cognee Cloud).
 
     Args:
         text: The note content.
@@ -394,14 +405,7 @@ async def ingest_text(
     try:
         full_text = f"Source: Personal Note — {title}\n\n{text}"
 
-        upload = await _upload_to_cloud(full_text, upload_dataset)
-        if upload["ok"]:
-            result["status"] = "success"
-            result["excerpt"] = full_text[:500]
-            _register_in_topic(result)
-        else:
-            result["status"] = "error"
-            result["error"] = upload["error"]
+        await _store(result, full_text, text_blocks(text))
 
     except Exception as exc:
         result["status"] = "error"

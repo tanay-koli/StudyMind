@@ -50,7 +50,7 @@ def fixed(blocks: list[Block], size: int = CHUNK_TOKENS, overlap: int = CHUNK_OV
 
 
 def structure(blocks: list[Block], max_tokens: int = CHUNK_TOKENS) -> list[Block]:
-    """Never cross a heading change; pack whole blocks up to max_tokens."""
+    """Never cross a heading change or page break; pack whole blocks up to max_tokens."""
     chunks: list[Block] = []
     current: Block | None = None
     current_tokens = 0
@@ -58,7 +58,11 @@ def structure(blocks: list[Block], max_tokens: int = CHUNK_TOKENS) -> list[Block
         n = len(token_spans(b.text))
         if n == 0:
             continue
-        fits = current and current.section_heading == b.section_heading and current_tokens + n <= max_tokens
+        fits = (
+            current
+            and (current.page, current.section_heading) == (b.page, b.section_heading)
+            and current_tokens + n <= max_tokens
+        )
         if fits:
             current.text += "\n\n" + b.text
             current_tokens += n
