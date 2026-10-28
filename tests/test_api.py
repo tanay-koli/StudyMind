@@ -51,10 +51,7 @@ def test_full_flow(client, offline):
     ):
         resp = client.post("/ask", json=body)
         assert resp.status_code == 200
-        if body["mode"] == "cross":  # still Cognee until Phase 2
-            assert "Self-attention" in resp.json()["answer"]
-        else:
-            assert resp.json()["citations"][0]["source_title"] == "Lecture 1"
+        assert resp.json()["citations"][0]["source_title"] == "Lecture 1"
 
     guide = client.post(f"/topics/{tid}/study-guide").json()["guide"]
     recalls = offline.count("/api/v1/recall")
@@ -95,7 +92,9 @@ def test_ingest_rejects_non_pdf(client):
 
 
 def test_summarize_and_connect(client):
-    assert "Self-attention" in client.post("/summarize", json={"topic": "attention"}).json()["summary"]
+    client.post("/ingest/text", json={"text": "Self-attention weighs tokens", "title": "L1", "topic_id": "general"})
+    summary = client.post("/summarize", json={"topic": "attention"}).json()
+    assert summary["sources_referenced"] == ["L1"] and summary["summary"] == "Transformer Models"
     body = client.post("/connect", json={"topic_a": "attention", "topic_b": "RNNs"}).json()
     assert "summary" in body and "nodes" in body
 
