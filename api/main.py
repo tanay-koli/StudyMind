@@ -125,7 +125,7 @@ async def suggest_topic(body: SuggestIn):
 @app.post("/topics/{topic_id}/study-guide")
 async def study_guide(topic_id: str, force: bool = False):
     _require_topic(topic_id)
-    return {"guide": await topics.generate_study_guide(topic_id, force=force)}
+    return await topics.generate_study_guide(topic_id, force=force)
 
 
 @app.post("/topics/{topic_id}/audio-script")

@@ -28,10 +28,10 @@ from core.config import settings, get_cloud_status_emoji
 # API helpers
 # ---------------------------------------------------------------------------
 
-def api(method: str, path: str, **kwargs):
+def api(method: str, path: str, timeout: int = 300, **kwargs):
     """Call the StudyMind API and return its JSON; show the error and stop on failure."""
     try:
-        resp = httpx.request(method, f"{settings.api_url}{path}", timeout=300, **kwargs)
+        resp = httpx.request(method, f"{settings.api_url}{path}", timeout=timeout, **kwargs)
     except httpx.TransportError:
         st.error(
             f"Cannot reach the StudyMind API at {settings.api_url}. "
@@ -335,7 +335,7 @@ with st.sidebar:
                     st.rerun()
 
                 with st.spinner("Generating study guide..."):
-                    guide_content = api("POST", f"/topics/{sg_tid}/study-guide")["guide"]
+                    guide_content = api("POST", f"/topics/{sg_tid}/study-guide", timeout=900)["guide"]
 
                 st.markdown(guide_content)
 
