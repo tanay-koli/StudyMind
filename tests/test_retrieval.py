@@ -8,7 +8,6 @@ from core import retrieval, topics
 from core.config import settings
 from core.db import Chunk, session
 from core.parse import Block
-from tests.conftest import RECALL_TEXT
 
 
 def _src(topic_id="general", title="Doc"):
@@ -104,16 +103,26 @@ async def test_hybrid_empty_store_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_cognee_retriever_uses_chunks_search(offline):
-    hits = await retrieval.CogneeRetriever().retrieve("q", None)
-    assert [(h.text, h.page, h.source_title) for h in hits] == [(RECALL_TEXT, None, "transformers")]
-    assert "/api/v1/recall" in offline
+async def test_dense_retriever_returns_hits_without_rerank(monkeypatch):
+    t1, _ = _two_topics()
+
+    def no_rerank(query, texts):
+        raise AssertionError("dense baseline must not rerank")
+
+    monkeypatch.setattr(retrieval, "rerank", no_rerank)
+    hits = await retrieval.DenseRetriever().retrieve("self attention weighs tokens", t1, k=1)
+    assert [(h.page, h.section, h.source_title) for h in hits] == [(4, "Attention", "Doc")]
+
+
+@pytest.mark.asyncio
+async def test_dense_retriever_empty_store():
+    assert await retrieval.DenseRetriever().retrieve("anything", None) == []
 
 
 def test_get_retriever(monkeypatch):
     assert isinstance(retrieval.get_retriever(), retrieval.HybridRetriever)
-    monkeypatch.setattr(settings, "retriever", "cognee")
-    assert isinstance(retrieval.get_retriever(), retrieval.CogneeRetriever)
+    monkeypatch.setattr(settings, "retriever", "dense")
+    assert isinstance(retrieval.get_retriever(), retrieval.DenseRetriever)
 
 
 def test_concurrent_search_and_writes_do_not_fail():

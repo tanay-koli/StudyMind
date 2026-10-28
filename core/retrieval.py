@@ -246,6 +246,24 @@ def rrf(rankings: list[list[int]], k: int = RRF_K) -> list[int]:
     return sorted(scores, key=scores.get, reverse=True)
 
 
+def _topic_filter(topic_id: Optional[str]) -> Optional[models.Filter]:
+    if not topic_id:
+        return None
+    return models.Filter(must=[models.FieldCondition(key="topic_id", match=models.MatchValue(value=topic_id))])
+
+
+def _hydrate(ids: list[int]) -> list[tuple[Chunk, str]]:
+    """Chunk rows with their source title; orphan points (no Source row) drop out."""
+    with session() as s:
+        return s.exec(
+            select(Chunk, Source.title).join(Source, Chunk.source_id == Source.id).where(Chunk.id.in_(ids))
+        ).all()
+
+
+def _hit(c: Chunk, title: str, score: float) -> Hit:
+    return Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score))
+
+
 class HybridRetriever:
     """Dense + BM25, fused with RRF, then reranked with a cross-encoder."""
 
@@ -258,9 +276,7 @@ class HybridRetriever:
         with _lock:
             if not client.collection_exists(name):
                 return []
-        flt = None
-        if topic_id:
-            flt = models.Filter(must=[models.FieldCondition(key="topic_id", match=models.MatchValue(value=topic_id))])
+        flt = _topic_filter(topic_id)
 
         dense = embed_dense([query], query=True)[0]
         sparse = embed_sparse([query], query=True)[0]
@@ -272,42 +288,35 @@ class HybridRetriever:
                 for vector, using in ((dense, "dense"), (sparse, "bm25"))
             ]
         fused = rrf(rankings)[:CANDIDATES]
-        if not fused:
-            return []
-
-        with session() as s:
-            rows = s.exec(
-                select(Chunk, Source.title).join(Source, Chunk.source_id == Source.id).where(Chunk.id.in_(fused))
-            ).all()
+        rows = _hydrate(fused) if fused else []
         if not rows:
             return []
         scores = rerank(query, [_search_text(c) for c, _ in rows])
         ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
-        return [
-            Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score))
-            for (c, title), score in ranked
-        ]
+        return [_hit(c, title, score) for (c, title), score in ranked]
 
 
-class CogneeRetriever:
-    """Baseline: Cognee Cloud CHUNKS search. Hits carry no page or chunk id."""
+class DenseRetriever:
+    """Baseline for the eval: dense vectors only, no BM25, fusion or rerank."""
 
     async def retrieve(self, query: str, topic_id: Optional[str], k: int = 6) -> list[Hit]:
-        from core.query import _extract_text_from_recall, _recall
-        from core.topics import get_topic_datasets
+        return await asyncio.to_thread(self._search, query, topic_id, k)
 
-        datasets = (get_topic_datasets(topic_id) or None) if topic_id else None
-        recall = await _recall(query, search_type="CHUNKS", datasets=datasets)
-        if not recall["ok"] or not recall["data"]:
-            return []
-        data = recall["data"]
-        hits = []
-        for item in data if isinstance(data, list) else [data]:
-            title = item.get("dataset_name", "Cognee") if isinstance(item, dict) else "Cognee"
-            for text in _extract_text_from_recall([item]):
-                hits.append(Hit(None, None, title, None, None, text, 0.0))
-        return hits[:k]
+    def _search(self, query: str, topic_id: Optional[str], k: int) -> list[Hit]:
+        name = collection_name()
+        client = store()
+        vector = embed_dense([query], query=True)[0]
+        with _lock:
+            if not client.collection_exists(name):
+                return []
+            points = client.query_points(
+                name, query=vector, using="dense", query_filter=_topic_filter(topic_id), limit=k,
+            ).points
+        scores = {p.id: p.score for p in points}
+        rows = _hydrate(list(scores)) if scores else []
+        rows.sort(key=lambda r: scores[r[0].id], reverse=True)
+        return [_hit(c, title, scores[c.id]) for c, title in rows]
 
 
 def get_retriever() -> Retriever:
-    return CogneeRetriever() if settings.retriever == "cognee" else HybridRetriever()
+    return DenseRetriever() if settings.retriever == "dense" else HybridRetriever()

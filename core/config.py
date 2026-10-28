@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Retrieval
     chunker: str = "structure"  # structure | fixed
     embed_model: str = "bge-small"  # bge-small | nomic
-    retriever: str = "hybrid"  # hybrid | cognee
+    retriever: str = "hybrid"  # hybrid | dense
     qdrant_path: str = (DATA_DIR / "qdrant").as_posix()  # ":memory:" in tests
 
     # Where the Streamlit UI finds the API
