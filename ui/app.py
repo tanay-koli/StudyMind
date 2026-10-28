@@ -48,6 +48,16 @@ def suggest(excerpt: str) -> str:
     return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
 
+def _render_citations(citations: list[dict]) -> None:
+    """One chip per cited chunk, numbered like the [n] markers; click to read the chunk."""
+    if not citations:
+        return
+    for col, (n, c) in zip(st.columns(len(citations)), enumerate(citations, start=1)):
+        label = f"[{n}] 📄 {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else "")
+        with col, st.popover(label, width="stretch"):
+            st.markdown(c["text"])
+
+
 # ---------------------------------------------------------------------------
 # Page config — MUST be the first Streamlit command
 # ---------------------------------------------------------------------------
@@ -703,8 +713,9 @@ with tab_ask:
                         st.markdown(msg["cross_section"])
                 else:
                     st.markdown(msg["content"])
-                
-                if msg.get("sources"):
+
+                _render_citations(msg.get("citations", []))
+                if msg.get("sources") and not msg.get("citations"):
                     with st.expander("📎 Sources"):
                         for src in msg["sources"]:
                             st.caption(src)
@@ -724,7 +735,7 @@ with tab_ask:
 
             # Get answer
             with st.chat_message("assistant"):
-                with st.spinner("🤔 Querying Cognee Cloud knowledge graph..."):
+                with st.spinner("🤔 Searching your material..."):
                     if selected_ask_tid == "all_topics":
                         body = {"question": question, "mode": "global"}
                     else:
@@ -755,7 +766,8 @@ with tab_ask:
                     else:
                         st.markdown(answer_text)
 
-                    if result.get("sources"):
+                    _render_citations(result.get("citations", []))
+                    if result.get("sources") and not result.get("citations"):
                         with st.expander("📎 Sources"):
                             for src in result["sources"]:
                                 st.caption(src)
@@ -769,6 +781,7 @@ with tab_ask:
                         "primary_section": result.get("primary_section", ""),
                         "cross_section": result.get("cross_section", ""),
                         "sources": result.get("sources", []),
+                        "citations": result.get("citations", []),
                     })
             st.rerun()
 
