@@ -1,15 +1,13 @@
 """
 StudyMind — Graph Utilities
 
-Helpers to parse Cognee search results, build connection graphs from
-overlapping results, and render interactive pyvis visualizations.
+Helpers to build connection graphs from overlapping passages and render
+interactive pyvis visualizations.
 """
 
 import hashlib
-import json
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -24,86 +22,6 @@ SOURCE_COLORS = {
     "shared": "#1E90FF",    # Connecting blue
     "default": "#A4B0BE",   # Neutral gray
 }
-
-SOURCE_ICONS = {
-    "pdf": "📄",
-    "youtube": "🎥",
-    "web": "🌐",
-    "note": "📝",
-    "topic": "🔍",
-}
-
-
-def parse_search_results(results) -> list[dict]:
-    """Normalize Cognee SearchResult objects into serializable dicts.
-
-    Handles the various shapes that SearchResult payloads can take
-    (objects with attributes, dicts, strings, etc.).
-
-    Args:
-        results: List of Cognee SearchResult objects.
-
-    Returns:
-        List of normalized dicts with keys: text, type, source, metadata
-    """
-    if not results:
-        return []
-
-    parsed = []
-    for sr in results:
-        entry = {
-            "text": "",
-            "type": "unknown",
-            "source": None,
-            "metadata": {},
-            "raw": None,
-        }
-
-        # Handle different SearchResult shapes
-        if hasattr(sr, "payload"):
-            payload = sr.payload
-
-            # Payload is an object with attributes
-            if hasattr(payload, "text"):
-                entry["text"] = payload.text
-            elif hasattr(payload, "name"):
-                entry["text"] = payload.name
-            elif isinstance(payload, str):
-                entry["text"] = payload
-            elif isinstance(payload, dict):
-                entry["text"] = (
-                    payload.get("text", "")
-                    or payload.get("name", "")
-                    or payload.get("description", "")
-                    or str(payload)
-                )
-                entry["metadata"] = payload
-            else:
-                entry["text"] = str(payload)
-
-            # Extract type info
-            if hasattr(payload, "__class__"):
-                entry["type"] = payload.__class__.__name__
-
-            # Extract source/dataset info
-            if hasattr(sr, "dataset_name"):
-                entry["source"] = sr.dataset_name
-            elif hasattr(sr, "metadata") and isinstance(sr.metadata, dict):
-                entry["source"] = sr.metadata.get("dataset_name")
-
-        elif isinstance(sr, str):
-            entry["text"] = sr
-        elif isinstance(sr, dict):
-            entry["text"] = sr.get("text", str(sr))
-            entry["metadata"] = sr
-        else:
-            entry["text"] = str(sr)
-
-        entry["raw"] = sr
-        if entry["text"]:
-            parsed.append(entry)
-
-    return parsed
 
 
 def _extract_entity_names(parsed_results: list[dict]) -> set[str]:
@@ -416,34 +334,3 @@ def _empty_graph_html() -> str:
         </div>
     </div>
     """
-
-
-def format_source_attribution(search_result) -> Optional[str]:
-    """Extract source/dataset attribution from a Cognee search result.
-
-    Args:
-        search_result: A Cognee SearchResult object.
-
-    Returns:
-        A human-readable source string, or None if not available.
-    """
-    source = None
-
-    if hasattr(search_result, "dataset_name"):
-        source = search_result.dataset_name
-    elif hasattr(search_result, "metadata") and isinstance(search_result.metadata, dict):
-        source = search_result.metadata.get("dataset_name")
-    elif hasattr(search_result, "payload"):
-        payload = search_result.payload
-        if isinstance(payload, dict):
-            source = payload.get("dataset_name") or payload.get("source")
-
-    if source:
-        # Make it human-readable: "pdf_attention_paper" → "📄 attention paper"
-        for prefix, icon in SOURCE_ICONS.items():
-            if source.startswith(f"{prefix}_"):
-                clean = source[len(prefix) + 1:].replace("_", " ").title()
-                return f"{icon} {clean}"
-        return source
-
-    return None

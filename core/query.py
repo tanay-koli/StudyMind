@@ -1,23 +1,13 @@
 """
 StudyMind — Query Module
 
-Five core query functions:
-  1. ask()              — Q&A over all material: our retriever + local LLM, with citations
+Every feature retrieves with a short query (the question or topic), then
+generates with the local LLM over the numbered passages; never one string for both.
+  1. ask()              — Q&A over all material, with citations
   2. ask_scoped()       — the same, filtered to one topic
-  3. cross_topic_ask()  — primary topic Q&A + cross-topic connections
-  4. connect_topics()   — relationship discovery (two CHUNKS recalls + synthesis)
-  5. summarize_topic()  — cross-source summary (HYBRID_COMPLETION)
-
-All functions are async and share one httpx.AsyncClient (core.config.http_client).
-
-Search types supported by Cognee Cloud /api/v1/recall:
-  HYBRID_COMPLETION     — vector + graph blend (fast, default for summaries)
-  GRAPH_COMPLETION      — full graph reasoning (best for Q&A)
-  CHUNKS                — pure vector retrieval, no LLM (for connect_topics context)
-  GRAPH_SUMMARY_COMPLETION — graph + summary LLM
-
-datasets filter (confirmed from API spec):
-  Pass datasets=[topic_id] to scope recall to a single topic's data.
+  3. cross_topic_ask()  — primary topic answer + connections from other topics
+  4. connect_topics()   — shared concepts between two topics, as a graph
+  5. summarize_topic()  — cross-source summary of a free-text topic
 """
 
 import asyncio
@@ -25,18 +15,16 @@ import hashlib
 import re
 from typing import Optional
 
-import httpx
-
-from core.config import settings, _headers, http_client
+from core.config import settings
+from core.graph_utils import build_connection_graph, render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
-from core.retrieval import get_retriever
-from core.graph_utils import (
-    parse_search_results,
-    build_connection_graph,
-    format_source_attribution,
-    render_pyvis_graph,
-    SOURCE_COLORS,
+from core.retrieval import Hit, get_retriever
+
+CITE_RULES = (
+    "You are a study assistant. Answer only from the numbered context passages.\n"
+    "Cite the passage for every claim with its number in square brackets, like [2].\n"
 )
+ANSWER_SYSTEM = CITE_RULES + "If the context does not contain the answer, reply exactly: This isn't in your material."
 
 
 # ---------------------------------------------------------------------------
@@ -48,159 +36,35 @@ def _node_id(label: str) -> str:
     return hashlib.md5(label.lower().encode()).hexdigest()[:8]
 
 
-def _chunk_text(text: str, max_chars: int) -> str:
-    """Truncate a chunk to max_chars with a trailing ellipsis."""
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip() + "..."
+def _context(hits: list[Hit], start: int = 1) -> tuple[str, list[dict]]:
+    """Numbered passages for the prompt, and the matching citations."""
+    text = "\n\n".join(
+        f"[{n}] {h.source_title}"
+        + (f", p.{h.page}" if h.page else "")
+        + (f" — {h.section}" if h.section else "")
+        + f"\n{h.text}"
+        for n, h in enumerate(hits, start=start)
+    )
+    citations = [
+        {"source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id,
+         "score": h.score, "text": h.text}
+        for h in hits
+    ]
+    return text, citations
 
 
-async def _recall(
-    query: str,
-    search_type: str = "GRAPH_COMPLETION",
-    datasets: Optional[list] = None,
-    timeout: int = 60,
-) -> dict:
-    """POST /api/v1/recall.
+def _topic_name(topic_id: str) -> str:
+    from core.topics import load_topics
 
-    Args:
-        query: Natural language query string.
-        search_type: One of GRAPH_COMPLETION, HYBRID_COMPLETION, CHUNKS,
-                     GRAPH_SUMMARY_COMPLETION.
-        datasets: Optional list of dataset names to scope the search
-                  (maps to the 'datasets' field in the Cognee Cloud API).
-        timeout: HTTP timeout in seconds.
-
-    Returns:
-        dict with keys: ok (bool), data (any), error (str|None)
-    """
-    if not settings.cognee_base_url or not settings.cognee_api_key:
-        return {
-            "ok": False,
-            "data": None,
-            "error": "Cognee Cloud credentials not configured. Check .env.",
-        }
-
-    payload: dict = {"query": query, "search_type": search_type}
-    if datasets:
-        payload["datasets"] = datasets
-
-    try:
-        resp = await http_client().post(
-            f"{settings.cognee_base_url}/api/v1/recall",
-            headers=_headers(),
-            json=payload,
-            timeout=timeout,
-        )
-        if resp.status_code == 200:
-            return {"ok": True, "data": resp.json(), "error": None}
-        else:
-            try:
-                detail = resp.json()
-            except Exception:
-                detail = resp.text[:300]
-            return {
-                "ok": False,
-                "data": None,
-                "error": f"Cognee Cloud returned HTTP {resp.status_code}: {detail}",
-            }
-    except httpx.ConnectError:
-        return {
-            "ok": False,
-            "data": None,
-            "error": (
-                f"Cannot reach Cognee Cloud at {settings.cognee_base_url}. "
-                "Check your internet connection."
-            ),
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "data": None,
-            "error": f"Recall failed: {type(exc).__name__}: {exc}",
-        }
-
-
-def _extract_text_from_recall(data) -> list[str]:
-    """Pull answer/text strings out of the Cognee Cloud recall response.
-
-    The cloud API may return:
-      - A list of result objects  [{text: ...}, ...]
-      - A string answer directly
-      - A dict with an "answer" or "results" key
-    """
-    texts = []
-
-    if data is None:
-        return texts
-
-    if isinstance(data, str):
-        return [data] if data.strip() else []
-
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, str):
-                if item.strip():
-                    texts.append(item)
-            elif isinstance(item, dict):
-                t = (
-                    item.get("text", "")
-                    or item.get("answer", "")
-                    or item.get("content", "")
-                    or item.get("name", "")
-                    or str(item)
-                )
-                if t.strip():
-                    texts.append(t.strip())
-        return texts
-
-    if isinstance(data, dict):
-        # Try common response shapes
-        if "answer" in data:
-            return [data["answer"]] if data["answer"] else []
-        if "results" in data:
-            return _extract_text_from_recall(data["results"])
-        if "text" in data:
-            return [data["text"]] if data["text"] else []
-        # Fallback: stringify
-        return [str(data)]
-
-    return [str(data)]
-
-
-def _extract_sources_from_recall(data) -> list[str]:
-    """Extract source/dataset attribution strings from recall response."""
-    sources = []
-    seen: set = set()
-
-    items = data if isinstance(data, list) else ([data] if data else [])
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        for key in ("dataset_name", "source", "dataset"):
-            val = item.get(key)
-            if val and isinstance(val, str) and val not in seen:
-                sources.append(val)
-                seen.add(val)
-
-    return sources
+    return load_topics().get(topic_id, {}).get("name", topic_id)
 
 
 # ---------------------------------------------------------------------------
-# Public query functions
+# Q&A
 # ---------------------------------------------------------------------------
-
-ANSWER_SYSTEM = (
-    "You are a study assistant. Answer only from the numbered context passages.\n"
-    "Cite the passage for every claim with its number in square brackets, like [2].\n"
-    "If the context does not contain the answer, reply exactly: This isn't in your material."
-)
-
 
 async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dict:
     """Retrieve chunks, then generate a grounded answer that cites them as [n]."""
-    retriever = get_retriever()
     result = {
         "answer": "",
         "sources": [],
@@ -209,22 +73,11 @@ async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dic
         "error": None,
     }
     try:
-        hits = await retriever.retrieve(question, topic_id)
+        hits = await get_retriever().retrieve(question, topic_id)
         if not hits:
             result["answer"] = empty_msg
             return result
-        context = "\n\n".join(
-            f"[{n}] {h.source_title}"
-            + (f", p.{h.page}" if h.page else "")
-            + (f" — {h.section}" if h.section else "")
-            + f"\n{h.text}"
-            for n, h in enumerate(hits, start=1)
-        )
-        result["citations"] = [
-            {"source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id,
-             "score": h.score, "text": h.text}
-            for h in hits
-        ]
+        context, result["citations"] = _context(hits)
         result["sources"] = list(dict.fromkeys(h.source_title for h in hits))
         result["answer"] = await llm.complete(f"{context}\n\nQuestion: {question}", system=ANSWER_SYSTEM)
     except Exception as exc:
@@ -250,127 +103,117 @@ async def ask_scoped(question: str, topic_id: str) -> dict:
     Returns:
         dict with keys: answer, sources, citations, search_type, topic_id, error
     """
-    from core.topics import load_topics
-
-    topic_name = load_topics().get(topic_id, {}).get("name", topic_id)
     result = await _answer(
         question, topic_id,
-        f"No results found in **{topic_name}**. "
+        f"No results found in **{_topic_name(topic_id)}**. "
         "Try adding more material to this topic or asking a broader question.",
     )
     result["topic_id"] = topic_id
     return result
 
 
-async def cross_topic_ask(
-    question: str,
-    primary_topic_id: str,
-    all_topic_ids: list,
-) -> dict:
-    """Answer using primary topic + surface related content from other topics.
+async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: list) -> dict:
+    """Answer from the primary topic, plus connections from every other topic.
 
-    Strategy:
-      1. Recall CHUNKS from primary topic (top 4 chunks, 300 chars each)
-      2. Recall CHUNKS from every other topic (top 2 chunks each)
-      3. Synthesize with ONE GRAPH_COMPLETION recall using a structured prompt
-         that separates primary vs cross-topic context
+    Retrieves the question per topic (top 6 primary, top 2 each other topic),
+    then generates once over those passages only.
 
     Returns:
-        dict with keys: answer, primary_section, cross_section, sources,
+        dict with keys: answer, primary_section, cross_section, sources, citations,
                         search_type, topic_id, error
     """
-    from core.topics import get_topic_datasets, load_topics
-
+    primary_name = _topic_name(primary_topic_id)
     result = {
         "answer": "",
         "primary_section": "",
         "cross_section": "",
         "sources": [],
-        "search_type": "GRAPH_COMPLETION (cross-topic)",
+        "citations": [],
+        "search_type": f"{settings.retriever.upper()} (cross-topic)",
         "topic_id": primary_topic_id,
         "error": None,
     }
-
-    topics = load_topics()
-    primary_name = topics.get(primary_topic_id, {}).get("name", primary_topic_id)
-    primary_datasets = get_topic_datasets(primary_topic_id)
-
-    # Step 1: fetch primary topic chunks
-    primary_recall = await _recall(
-        question,
-        search_type="CHUNKS",
-        datasets=primary_datasets if primary_datasets else None,
-        timeout=30,
-    )
-    primary_texts = _extract_text_from_recall(primary_recall.get("data")) if primary_recall["ok"] else []
-    primary_chunks = [t[:300] for t in primary_texts[:4]]
-
-    # Step 2: fetch chunks from other topics
-    other_chunks: list = []
-    other_ids = [
-        tid for tid in all_topic_ids
-        if tid != primary_topic_id and get_topic_datasets(tid)
-    ]
-    other_recalls = await asyncio.gather(*(
-        _recall(question, search_type="CHUNKS", datasets=get_topic_datasets(tid), timeout=20)
-        for tid in other_ids
-    ))
-    for other_id, other_recall in zip(other_ids, other_recalls):
-        other_name = topics.get(other_id, {}).get("name", other_id)
-        if other_recall["ok"] and other_recall["data"]:
-            texts = _extract_text_from_recall(other_recall["data"])
-            for t in texts[:2]:
-                other_chunks.append(f"[{other_name}] {t[:300]}")
-
-    # Step 3: synthesize
-    ctx_primary = "\n".join(f"- {c}" for c in primary_chunks) if primary_chunks else f"(no material found in '{primary_name}')"
-    ctx_cross   = "\n".join(f"- {c}" for c in other_chunks) if other_chunks else "(no related content found in other topics)"
-
-    synthesis_prompt = (
-        f"Answer '{question}' primarily using the '{primary_name}' material, "
-        f"but also note any relevant connections from other topics.\n\n"
-        f"Primary source ({primary_name}):\n{ctx_primary}\n\n"
-        f"Related from other topics:\n{ctx_cross}\n\n"
-        f"Structure your answer in two sections:\n"
-        f"**From {primary_name}:** [answer from primary material]\n\n"
-        f"**Connected from other topics:** [any relevant connections, or 'None found' if none]"
-    )
-
-    synth_recall = await _recall(synthesis_prompt, search_type="GRAPH_COMPLETION", timeout=90)
-
-    if synth_recall["ok"] and synth_recall["data"]:
-        full_answer = "\n\n".join(_extract_text_from_recall(synth_recall["data"]))
-        result["answer"] = full_answer
-        result["sources"] = _extract_sources_from_recall(synth_recall["data"])
-
-        # Try to split into sections for UI display
-        if f"**From {primary_name}:**" in full_answer:
-            parts = full_answer.split(f"**Connected from other topics:**", 1)
-            result["primary_section"] = parts[0].replace(f"**From {primary_name}:**", "").strip()
-            result["cross_section"]   = parts[1].strip() if len(parts) > 1 else ""
-        else:
-            result["primary_section"] = full_answer
-            result["cross_section"]   = ""
-    else:
-        result["error"] = synth_recall.get("error")
-        result["answer"] = (
-            f"**From {primary_name}:**\n" + "\n".join(f"- {c}" for c in primary_chunks)
-            + (f"\n\n**Connected from other topics:**\n" + "\n".join(f"- {c}" for c in other_chunks) if other_chunks else "")
+    try:
+        retriever = get_retriever()
+        others = [tid for tid in all_topic_ids if tid != primary_topic_id]
+        primary_hits, *other_lists = await asyncio.gather(
+            retriever.retrieve(question, primary_topic_id, k=6),
+            *(retriever.retrieve(question, tid, k=2) for tid in others),
         )
+        other_hits = [h for hits in other_lists for h in hits]
+        if not primary_hits and not other_hits:
+            result["answer"] = (
+                f"No results found in **{primary_name}** or any other topic. "
+                "Try adding more material or asking a broader question."
+            )
+            return result
 
+        ctx_primary, cites_primary = _context(primary_hits)
+        ctx_other, cites_other = _context(other_hits, start=len(primary_hits) + 1)
+        result["citations"] = cites_primary + cites_other
+        result["sources"] = list(dict.fromkeys(h.source_title for h in primary_hits + other_hits))
+        prompt = (
+            f"Passages from {primary_name}:\n{ctx_primary or '(none)'}\n\n"
+            f"Passages from other topics:\n{ctx_other or '(none)'}\n\n"
+            f"Question: {question}\n\n"
+            f"Answer in two sections:\n"
+            f"**From {primary_name}:** the answer from its passages\n\n"
+            f"**Connected from other topics:** related points from the other passages, or 'None found'"
+        )
+        answer = await llm.complete(prompt, system=CITE_RULES)
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    result["answer"] = answer
+    head = f"**From {primary_name}:**"
+    parts = answer.split("**Connected from other topics:**", 1)
+    result["primary_section"] = parts[0].replace(head, "").strip()
+    result["cross_section"] = parts[1].strip() if len(parts) > 1 else ""
     return result
 
 
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+async def summarize_topic(topic: str) -> dict:
+    """Summarize what the material says about a free-text topic.
+
+    Returns:
+        dict with keys: summary, sources_referenced, citations, error
+    """
+    result: dict = {"summary": "", "sources_referenced": [], "citations": [], "error": None}
+    try:
+        hits = await get_retriever().retrieve(topic, None, k=8)
+        if not hits:
+            result["summary"] = (
+                f"No information found about '{topic}'. "
+                f"Make sure you've ingested material that covers this topic."
+            )
+            return result
+        context, result["citations"] = _context(hits)
+        result["sources_referenced"] = list(dict.fromkeys(h.source_title for h in hits))
+        result["summary"] = await llm.complete(
+            f"{context}\n\nSummarize what these passages say about '{topic}'.",
+            system=CITE_RULES,
+        )
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Connections
+# ---------------------------------------------------------------------------
+
 async def connect_topics(topic_a: str, topic_b: str) -> dict:
+    """Find and visualize the concepts connecting two topics.
 
-    """Find and visualize the relationship path between two topics.
-
-    Strategy (Cognee Cloud):
-      Option A: Recall CHUNKS for each topic → find overlapping entities →
-                build pyvis graph from shared concepts.
-      Option B: Single GRAPH_COMPLETION recall combining both topics →
-                parse plain-text concepts → build pyvis graph.
-      Option C: Clean empty state — no misleading fabricated connections.
+    Retrieves each topic's passages, then:
+      A: shared entities across the passages (local, no LLM)
+      B: if none, the LLM names connecting concepts from both sets of passages
+      C: clean empty state — no fabricated connections
 
     Returns:
         dict with keys: nodes, edges, summary, html_graph, connection_method, error
@@ -384,131 +227,81 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
         "error": None,
     }
 
-    # Option A: CHUNKS retrieval → entity overlap
     try:
-        nodes, edges, summary = await _connect_via_chunks(topic_a, topic_b)
-        if nodes and edges:
-            result["nodes"] = nodes
-            result["edges"] = edges
-            result["summary"] = summary
-            result["connection_method"] = "entity_overlap"
-            result["html_graph"] = render_pyvis_graph(nodes, edges, topic_a, topic_b)
-            return result
-    except Exception as exc_a:
-        result["error"] = f"[Option A] {type(exc_a).__name__}: {exc_a}"
+        retriever = get_retriever()
+        hits_a, hits_b = await asyncio.gather(
+            retriever.retrieve(topic_a, None, k=6),
+            retriever.retrieve(topic_b, None, k=6),
+        )
+        attempts = (
+            ("entity_overlap", lambda: _connect_via_entities(topic_a, topic_b, hits_a, hits_b)),
+            ("ai_synthesized", lambda: _connect_via_llm(topic_a, topic_b, hits_a, hits_b)),
+        )
+        if hits_a or hits_b:
+            for method, attempt in attempts:
+                nodes, edges, summary = await attempt()
+                if nodes and edges:
+                    result.update(
+                        nodes=nodes, edges=edges, summary=summary, connection_method=method,
+                        html_graph=render_pyvis_graph(nodes, edges, topic_a, topic_b),
+                    )
+                    return result
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
 
-    # Option B: GRAPH_COMPLETION for the combined query
-    try:
-        nodes, edges, summary = await _connect_via_graph_completion(topic_a, topic_b)
-        if nodes and edges:
-            result["nodes"] = nodes
-            result["edges"] = edges
-            result["summary"] = summary
-            result["connection_method"] = "ai_synthesized"
-            result["html_graph"] = render_pyvis_graph(nodes, edges, topic_a, topic_b)
-            return result
-    except Exception as exc_b:
-        prev = result.get("error") or ""
-        result["error"] = prev + f" | [Option B] {type(exc_b).__name__}: {exc_b}"
-
-    # Option C: clean empty state
     result["summary"] = (
         f"No connections found between '{topic_a}' and '{topic_b}' "
-        f"in the current knowledge graph. Try ingesting more material "
-        f"that covers both topics."
+        f"in your material. Try ingesting more material that covers both topics."
     )
-    result["connection_method"] = "none"
-    result["html_graph"] = None
     return result
 
 
-async def summarize_topic(topic: str) -> dict:
-    """Generate a cross-source summary for a given topic.
+async def _connect_via_entities(topic_a: str, topic_b: str, hits_a: list[Hit], hits_b: list[Hit]) -> tuple:
+    """Shared entities across the two topics' passages. Returns ([], [], '') if no overlap."""
+    def parsed(hits):
+        return [{"text": h.text, "type": "chunk", "source": None, "metadata": {}, "raw": None} for h in hits]
 
-    Uses HYBRID_COMPLETION for a balanced speed/quality tradeoff.
-
-    Returns:
-        dict with keys: summary (str), sources_referenced (List[str]), error (str|None)
-    """
-    result: dict = {
-        "summary": "",
-        "sources_referenced": [],
-        "error": None,
-    }
-
-    recall = await _recall(topic, search_type="HYBRID_COMPLETION")
-    if not recall["ok"]:
-        # Fallback to CHUNKS
-        recall = await _recall(topic, search_type="CHUNKS")
-
-    if not recall["ok"]:
-        result["error"] = recall.get("error")
-        result["summary"] = (
-            f"Could not retrieve information about '{topic}'. "
-            f"Error: {result['error']}"
-        )
-        return result
-
-    data = recall["data"]
-    texts = _extract_text_from_recall(data)
-    sources = _extract_sources_from_recall(data)
-
-    if not texts:
-        result["summary"] = (
-            f"No information found about '{topic}'. "
-            f"Make sure you've ingested material that covers this topic."
-        )
-        return result
-
-    result["summary"] = "\n\n".join(texts)
-    result["sources_referenced"] = sources
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Option A internals — CHUNKS overlap
-# ---------------------------------------------------------------------------
-
-async def _connect_via_chunks(topic_a: str, topic_b: str) -> tuple:
-    """Retrieve CHUNKS for each topic and find overlapping entities.
-
-    Returns (nodes, edges, summary). Returns ([], [], '') if no overlap.
-    """
-    raw_a, raw_b = await asyncio.gather(
-        _recall(topic_a, search_type="CHUNKS", timeout=30),
-        _recall(topic_b, search_type="CHUNKS", timeout=30),
-    )
-
-    texts_a = _extract_text_from_recall(raw_a.get("data")) if raw_a["ok"] else []
-    texts_b = _extract_text_from_recall(raw_b.get("data")) if raw_b["ok"] else []
-
-    # Convert text lists into the normalized dict format expected by build_connection_graph
-    parsed_a = [{"text": t, "type": "chunk", "source": None, "metadata": {}, "raw": None} for t in texts_a]
-    parsed_b = [{"text": t, "type": "chunk", "source": None, "metadata": {}, "raw": None} for t in texts_b]
-
-    nodes, edges = build_connection_graph(topic_a, topic_b, parsed_a, parsed_b)
-
+    nodes, edges = build_connection_graph(topic_a, topic_b, parsed(hits_a), parsed(hits_b))
     if not nodes or not edges:
         return [], [], ""
 
-    concept_labels = [
-        n["label"] for n in nodes
-        if n.get("source_type") == "shared"
-    ]
+    concept_labels = [n["label"] for n in nodes if n.get("source_type") == "shared"]
     summary = (
         f"**Shared concepts connecting '{topic_a}' and '{topic_b}'** "
-        f"(found via knowledge graph retrieval):\n\n"
+        f"(found in both sets of passages):\n\n"
         + "\n".join(f"- **{label}**" for label in concept_labels)
     )
     return nodes, edges, summary
 
 
-# ---------------------------------------------------------------------------
-# Option B internals — GRAPH_COMPLETION synthesis
-# ---------------------------------------------------------------------------
+async def _connect_via_llm(topic_a: str, topic_b: str, hits_a: list[Hit], hits_b: list[Hit]) -> tuple:
+    """The LLM names connecting concepts from both topics' passages."""
+    ctx_a, _ = _context(hits_a)
+    ctx_b, _ = _context(hits_b, start=len(hits_a) + 1)
+    reply = await llm.complete(
+        f"Passages about '{topic_a}':\n{ctx_a or '(none)'}\n\n"
+        f"Passages about '{topic_b}':\n{ctx_b or '(none)'}\n\n"
+        f"List up to 4 concepts from these passages that connect '{topic_a}' and '{topic_b}', "
+        f"one per line, exactly as:\nCONCEPT: <name> | REASON: <one sentence>",
+        system="You find connections between study topics using only the given passages.",
+    )
+    if not reply.strip():
+        return [], [], ""
+
+    nodes, edges = _parse_concept_lines(reply, topic_a, topic_b)
+    if len(nodes) <= 2:
+        return [], [], ""
+
+    concept_nodes = [n for n in nodes if n.get("source_type") == "shared"]
+    summary = (
+        f"**Connections suggested by the local LLM** (from passages on both topics):\n\n"
+        + "\n".join(f"- **{n['label']}** — {n.get('title', '')}" for n in concept_nodes)
+    )
+    return nodes, edges, summary
+
 
 def _parse_concept_lines(text: str, topic_a: str, topic_b: str) -> tuple:
-    """Parse plain-text recall response into pyvis nodes + edges.
+    """Parse an LLM reply into pyvis nodes + edges.
 
     Expected line format (one per concept):
         CONCEPT: <name> | REASON: <one sentence>
@@ -562,7 +355,7 @@ def _parse_concept_lines(text: str, topic_a: str, topic_b: str) -> tuple:
             concept_name = left
             reason = right
         else:
-            m = re.match(r"^[-*\u2022\d]+[.):]?\s*(.+)$", line)
+            m = re.match(r"^[-*•\d]+[.):]?\s*(.+)$", line)
             if m:
                 concept_name = m.group(1).strip()
 
@@ -596,58 +389,3 @@ def _parse_concept_lines(text: str, topic_a: str, topic_b: str) -> tuple:
         })
 
     return nodes, edges
-
-
-async def _connect_via_graph_completion(topic_a: str, topic_b: str) -> tuple:
-    """Option B: single GRAPH_COMPLETION recall combining both topics.
-
-    Returns (nodes, edges, summary_text). Returns ([], [], '') if empty output.
-    """
-    combined_query = (
-        f"How are '{topic_a}' and '{topic_b}' related? "
-        f"List the key concepts that connect them."
-    )
-
-    recall = await _recall(combined_query, search_type="GRAPH_COMPLETION", timeout=60)
-    if not recall["ok"]:
-        return [], [], ""
-
-    texts = _extract_text_from_recall(recall["data"])
-    raw_text = "\n".join(texts)
-
-    if not raw_text.strip():
-        return [], [], ""
-
-    nodes, edges = _parse_concept_lines(raw_text, topic_a, topic_b)
-
-    if not nodes or len(nodes) <= 2:
-        return [], [], ""
-
-    concept_nodes = [n for n in nodes if n.get("source_type") == "shared"]
-    summary = (
-        f"**Connections synthesized by Cognee Cloud** "
-        f"(graph reasoning across your study material):\n\n"
-        + "\n".join(
-            f"- **{n['label']}** — {n.get('title', '')}" for n in concept_nodes
-        )
-    )
-
-    return nodes, edges, summary
-
-
-# ---------------------------------------------------------------------------
-# _build_text_summary() — kept for backward compatibility
-# ---------------------------------------------------------------------------
-
-def _build_text_summary(topic_a: str, topic_b: str, nodes: list, edges: list) -> str:
-    """Build a simple text summary from graph data."""
-    if not edges:
-        return f"No connections found between '{topic_a}' and '{topic_b}'."
-
-    lines = [f"**Connection path between '{topic_a}' and '{topic_b}':**\n"]
-    for edge in edges:
-        lines.append(
-            f"- **{edge.get('from_label', '?')}** --[{edge.get('relationship', 'related')}]--> "
-            f"**{edge.get('to_label', '?')}**"
-        )
-    return "\n".join(lines)
