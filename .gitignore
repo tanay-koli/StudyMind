@@ -74,3 +74,6 @@ data/uploads/
 data/audio/
 data/models/
 data/qdrant/
+
+# Eval outputs
+eval/results/
