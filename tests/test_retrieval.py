@@ -11,7 +11,7 @@ from core.parse import Block
 
 
 def _src(topic_id="general", title="Doc"):
-    return topics.add_source(topic_id, topic_id, "note", title)["id"]
+    return topics.add_source(topic_id, "note", title)["id"]
 
 
 def _count(topic_id=None, collection=None):

@@ -31,14 +31,12 @@ class TestTextIngestion:
     async def test_ingest_text_records_source(self):
         """A successful ingestion is stored as a source row on its topic."""
         from core.ingest import ingest_text
-        from core.topics import create_topic, get_topic_datasets, list_sources
+        from core.topics import create_topic, list_sources
 
         tid = create_topic("Transformers")["id"]
         result = await ingest_text(text="Attention is all you need.", title="Paper", topic_id=tid)
 
-        assert result["dataset_name"] == tid
         assert [s["id"] for s in list_sources(tid)] == [result["source_id"]]
-        assert get_topic_datasets(tid) == [tid]
 
     @pytest.mark.asyncio
     async def test_ingest_text_cloud_error(self, offline):
