@@ -77,7 +77,8 @@ accumulates across turns in a thread.
 
 ### Tool
 
-`search_material(query, topic_id) -> list[dict]` calls `get_retriever().retrieve(query, topic_id)`
+`search_material(query, topic_id) -> list[dict]` calls `get_retriever(rewrite=False).retrieve(query, topic_id)` (the agent rewrites
+itself; with `QUERY_REWRITE=multi` each search would otherwise cost about 76 s, and the reranker would score paraphrases instead of the question)
 and returns the hits as dicts (`dataclasses.asdict`). Phase 5 adds its tools beside it.
 
 ### Nodes

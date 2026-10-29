@@ -180,7 +180,7 @@ git commit -m "feat: agent state and rule-based intent routing"
 **Interfaces:**
 - Consumes: `classify`, `LABELS`, `StudyState` (Task 2); `retrieval.relevant` (Task 1); `query._context`, `query.ANSWER_SYSTEM`, `query.CITE_RULES`, `query.connect_topics`; `llm.complete`, `llm.complete_json`; `settings.agent_db_path`.
 - Produces:
-  - `async def search_material(query: str, topic_id: str | None) -> list[dict]`, the tool (hits as `dataclasses.asdict`).
+  - `async def search_material(query: str, topic_id: str | None) -> list[dict]`, the tool: `get_retriever(rewrite=False).retrieve(query, topic_id)`, with hits as `dataclasses.asdict`. Never use the rewriting retriever here, because the agent does its own rewriting.
   - `def build(checkpointer) -> CompiledStateGraph`.
   - `@asynccontextmanager async def open_graph(path: str | None = None)`, which yields the compiled graph backed by `AsyncSqliteSaver.from_conn_string(path or settings.agent_db_path)`.
   - The graph input per turn: `{"messages": [], "question": msg, "topic_id": tid, "topics": topics or [], "intent_hint": hint}`. `route_intent` appends `{"role": "user", "content": question}` itself.
