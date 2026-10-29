@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from core import retrieval
+from core import concepts, retrieval
 from core.chunking import chunk
 from core.parse import Block, parse_pdf, text_blocks
 from core.topics import GENERAL_TOPIC_ID, add_source, delete_source
@@ -45,6 +45,7 @@ async def _store(result: dict, full_text: str, blocks: list[Block]) -> None:
         return
 
     result["status"] = "success"
+    concepts.wake()
     result["excerpt"] = full_text[:500]
 
 

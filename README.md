@@ -15,7 +15,7 @@
 | **💡 AI Topic Suggestions** | Suggests which topic new material belongs to via a toast/banner confirmation. |
 | **💬 Scoped Q&A with citations** | Ask within one topic or across all; answers cite passages as `[n]` and show clickable chips like `📄 notes.pdf · p.12`. |
 | **🔍 Cross-Topic Connections** | Answer from one topic and surface related passages from the others. |
-| **📖 Auto Study Guides** | Key concepts, details and review questions for a topic. Exportable to Markdown (`.md`). |
+| **📖 Auto Study Guides** | Map-reduce over every section of a topic: per-section key points, terms, overview and review questions. Exportable to Markdown (`.md`). |
 | **🎙️ Audio Overviews** | A podcast-style script, spoken locally (`.wav`) via `pyttsx3`. |
 | **🔗 Topic Map Visualization** | Discover how topics and concepts relate through interactive node graphs. |
 
@@ -60,6 +60,9 @@ StudyMind/
 │   ├── retrieval.py       # Qdrant store, HybridRetriever, DenseRetriever (baseline)
 │   ├── ingest.py          # Parse, chunk and index each source
 │   ├── query.py           # Grounded Q&A, cross-topic, summarize, connect
+│   ├── rewrite.py         # Query rewriting (multi-query, HyDE) around the retriever
+│   ├── concepts.py        # Concept triples (background worker) and topic overlap
+│   ├── studyguide.py      # Map-reduce study guide over every section
 │   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
 │   └── graph_utils.py     # Build connection graphs, render pyvis HTML
 ├── eval/
@@ -100,6 +103,7 @@ LLM_MODEL=ollama/qwen2.5:7b        # or ollama/gemma3:4b, groq/..., anthropic/..
 EMBED_MODEL=bge-small              # bge-small | nomic (reindexes on next start)
 CHUNKER=structure                  # structure | fixed
 RETRIEVER=hybrid                   # hybrid | dense (baseline)
+QUERY_REWRITE=none                 # none | multi | hyde (extra LLM call per question)
 ```
 
 > Set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` to trace every LLM call in Langfuse.
@@ -114,6 +118,7 @@ streamlit run ui/app.py            # UI on http://localhost:8501 (second termina
 The sidebar shows **🟢 Connected** for the LLM when Ollama is running and the model is pulled.
 On first start, an existing `data/topics.json` is imported into `data/studymind.db` (the JSON file is kept as a backup).
 Sources added before local indexing existed have no chunks: re-add them to make them searchable.
+The first API start after upgrading backfills concepts with the LLM in the background (roughly one LLM call per 4 chunks); a question can wait up to one batch call while it runs, and the topic map shows "N of M passages are still being processed" until it finishes.
 
 ---
 
@@ -130,6 +135,7 @@ All tests run offline: Ollama is mocked with `httpx.MockTransport`, the LLM, emb
 ```bash
 python -m eval.run --retriever hybrid
 python -m eval.run --retriever dense    # baseline: dense vectors only, no BM25/RRF/rerank
+python -m eval.run --retriever hybrid --rewrite multi   # query rewriting: none | multi | hyde
 ```
 
 Results go to `eval/results/<retriever>-<embed>-<date>.jsonl`. Stop the API first: embedded Qdrant allows one process at a time.

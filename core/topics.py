@@ -13,12 +13,13 @@ create_topic(name) → dict
 delete_topic(topic_id)
 add_source / list_sources / move_source / delete_source / delete_all_sources
 suggest_topic_name(text_excerpt, existing_names) → str     (async)
-generate_study_guide(topic_id, force=False) → str          (async)
+generate_study_guide(topic_id, force=False) → {guide, data}  (async)
 generate_audio_script(topic_id, force=False) → str         (async)
 synthesize_audio(topic_id, script) → Path | None
 invalidate_caches(topic_id)                 → (clears study_guide + audio)
 """
 
+import asyncio
 import json
 import re
 import hashlib
@@ -28,9 +29,9 @@ from typing import Optional
 
 from sqlmodel import delete, select, update
 
-from core import query, retrieval
+from core import query, retrieval, studyguide
 from core.config import DATA_DIR
-from core.db import Chunk, Source, Topic, session
+from core.db import Chunk, ConceptEdge, ConceptExtraction, Source, Topic, session
 from core.llm import llm
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,9 @@ def invalidate_caches(topic_id: str) -> None:
 def _purge(s, source_ids: list[int]) -> None:
     """Delete the sources' Qdrant points and chunk rows (caller commits)."""
     retrieval.delete_source_points(list(source_ids))
+    chunk_ids = s.exec(select(Chunk.id).where(Chunk.source_id.in_(source_ids))).all()
+    s.exec(delete(ConceptEdge).where(ConceptEdge.chunk_id.in_(chunk_ids)))
+    s.exec(delete(ConceptExtraction).where(ConceptExtraction.chunk_id.in_(chunk_ids)))
     s.exec(delete(Chunk).where(Chunk.source_id.in_(source_ids)))
 
 
@@ -208,6 +212,7 @@ def move_source(source_id: int, topic_id: str) -> Optional[dict]:
         src.topic_id = topic_id
         s.add(src)
         s.exec(update(Chunk).where(Chunk.source_id == source_id).values(topic_id=topic_id))
+        s.exec(update(ConceptEdge).where(ConceptEdge.source_id == source_id).values(topic_id=topic_id))
         retrieval.move_source_points(source_id, topic_id)
         s.commit()
     invalidate_caches(old_topic)
@@ -314,52 +319,43 @@ async def suggest_topic_name(text_excerpt: str, existing_names: list[str]) -> st
 # Feature: Study Guide generation
 # ---------------------------------------------------------------------------
 
-async def generate_study_guide(topic_id: str, force: bool = False) -> str:
-    """Generate a markdown study guide for the topic.
+async def generate_study_guide(topic_id: str, force: bool = False) -> dict:
+    """Map-reduce study guide over every chunk of the topic.
 
-    Uses the cached version unless force=True or cache is empty.
-    Generates over the topic's top passages; a failed attempt is not cached.
-
-    Returns the markdown string, or an error message.
+    Returns {"guide": markdown, "data": StudyGuide dict or None}. The StudyGuide JSON is
+    cached on the topic; incomplete guides and failures are not cached.
     """
     topic = load_topics().get(topic_id)
     if not topic:
-        return f"Topic '{topic_id}' not found."
+        return {"guide": f"Topic '{topic_id}' not found.", "data": None}
 
-    # Return cached version if available and not forced
     if not force and topic.get("study_guide"):
-        return topic["study_guide"]
+        try:
+            cached = studyguide.StudyGuide.model_validate_json(topic["study_guide"])
+            return {"guide": studyguide.render_markdown(cached), "data": cached.model_dump()}
+        except ValueError:
+            pass  # legacy Markdown cache: regenerate
 
     if not _has_sources(topic_id):
-        return (
+        return {"guide": (
             f"No sources ingested into **{topic['name']}** yet. "
             "Add some study material first using the Ingest tab."
-        )
+        ), "data": None}
 
-    topic_name = topic["name"]
-    prompt = (
-        f"Create a study guide for the topic '{topic_name}' from these passages.\n\n"
-        f"Structure the guide exactly as follows:\n"
-        f"## Key Concepts\n"
-        f"(bullet list of 5-8 main ideas)\n\n"
-        f"## Important Details\n"
-        f"(2-3 sentences per concept from the Key Concepts section)\n\n"
-        f"## Quick Review Questions\n"
-        f"(3-5 questions to test understanding)\n\n"
-        f"Be specific and accurate. Base everything on the actual study material."
-    )
+    unit_list = await asyncio.to_thread(studyguide.units, topic_id)
+    guide, complete = await studyguide.build(topic["name"], unit_list)
 
-    guide = await _grounded(topic, prompt)
-
-    if not guide:
-        return (
-            f"# Study Guide: {topic_name}\n\n"
+    if not unit_list or all(s.key_points == [studyguide.FAILED_POINT] for s in guide.sections):
+        return {"guide": (
+            f"# Study Guide: {topic['name']}\n\n"
             "_Could not generate study guide — no indexed content found for this topic, "
             "or the local LLM is not running. Re-ingest older sources if needed._"
-        )
+        ), "data": None}
 
-    _update_topic(topic_id, study_guide=guide, study_guide_generated_at=datetime.now().isoformat())
-    return guide
+    if complete:
+        _update_topic(topic_id, study_guide=guide.model_dump_json(),
+                      study_guide_generated_at=datetime.now().isoformat())
+    return {"guide": studyguide.render_markdown(guide), "data": guide.model_dump()}
 
 
 # ---------------------------------------------------------------------------
