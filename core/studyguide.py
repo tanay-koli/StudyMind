@@ -6,6 +6,7 @@ each (map) then derives overview / concepts / questions from the summaries
 (reduce). Sections are copied from the map step, so none can be dropped.
 """
 
+import logging
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -15,7 +16,10 @@ from core import chunking
 from core.db import Chunk, Source, session
 from core.llm import llm
 
+log = logging.getLogger("studymind.studyguide")
+
 UNIT_TOKENS = 2500
+REDUCE_TOKENS = 6000
 FAILED_POINT = "(could not summarise this section)"
 
 
@@ -138,23 +142,30 @@ async def _map(unit: Unit) -> _Map | None:
         try:
             return _Map.model_validate(await llm.complete_json(prompt, system=MAP_SYSTEM, timeout=180))
         except Exception:
-            continue
+            log.warning("study guide map failed for '%s'", unit.source_title, exc_info=True)
     return None
 
 
 async def _reduce(topic_name: str, sections: list[SectionSummary], terms: list[Term]) -> _Reduce | None:
     points = "\n\n".join(f"{s.heading}:\n" + "\n".join(f"- {p}" for p in s.key_points) for s in sections)
     glossary = "\n".join(f"- {t.term}: {t.definition}" for t in terms)
+    body = f"{points}\n\nTerms:\n{glossary}"  # terms come last, so truncation drops them first
+    # shortcut: reduce input truncated at 6000 tokens, upgrade to hierarchical reduce if large topics lose coverage in the overview
+    spans = chunking.token_spans(body)
+    if len(spans) > REDUCE_TOKENS:
+        body = body[:spans[REDUCE_TOKENS - 1][1]]
     prompt = (
         f"Combine these section summaries of '{topic_name}' into a study guide.\n"
         'Reply with JSON: {"overview": "2-3 sentences", "key_concepts": ["5-8 main ideas"], '
         '"review_questions": ["3-5 questions"]}\n\n'
-        f"{points}\n\nTerms:\n{glossary}"
+        f"{body}"
     )
     try:
-        return _Reduce.model_validate(await llm.complete_json(prompt, system=MAP_SYSTEM, timeout=180))
+        r = _Reduce.model_validate(await llm.complete_json(prompt, system=MAP_SYSTEM, timeout=180))
     except Exception:
+        log.warning("study guide reduce failed", exc_info=True)
         return None
+    return r if r.overview.strip() else None  # an empty overview is a failed reduce
 
 
 async def build(topic_name: str, unit_list: list[Unit]) -> tuple[StudyGuide, bool]:

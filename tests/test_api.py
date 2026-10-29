@@ -54,7 +54,7 @@ def test_full_flow(client, offline, monkeypatch):
         assert resp.json()["citations"][0]["source_title"] == "Lecture 1"
 
     async def json_llm(prompt, system=None, **kw):
-        return '{"key_points": ["kp"], "terms": []}'
+        return '{"key_points": ["kp"], "terms": [], "overview": "o"}'
 
     with monkeypatch.context() as m:
         m.setattr(llm, "complete", json_llm)
