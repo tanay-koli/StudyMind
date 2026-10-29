@@ -62,6 +62,28 @@ class ConceptExtraction(SQLModel, table=True):
     chunk_id: int = Field(primary_key=True)
 
 
+class ChunkMedia(SQLModel, table=True):
+    # Side row for chunks that are a figure, a table or a stretch of video (chunk itself is unchanged)
+    chunk_id: int = Field(primary_key=True)
+    kind: str  # figure | table | video
+    image_path: Optional[str] = None
+    bbox: Optional[str] = None  # "x0,y0,x1,y1" in PDF points
+    start_s: Optional[float] = None
+    url: Optional[str] = None  # video deep link at start_s
+
+
+class PendingFigure(SQLModel, table=True):
+    # A figure crop waiting for the vision model; becomes a Chunk + ChunkMedia once captioned
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source_id: int = Field(index=True)
+    topic_id: str
+    page: int
+    section_heading: Optional[str] = None
+    bbox: str
+    image_path: str
+    attempts: int = 0
+
+
 _engine: Engine | None = None
 
 

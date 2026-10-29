@@ -6,7 +6,7 @@ from sqlmodel import select
 
 from core import retrieval, topics
 from core.config import settings
-from core.db import Chunk, session
+from core.db import Chunk, ChunkMedia, session
 from core.parse import Block
 
 
@@ -239,3 +239,23 @@ def test_default_cutoff_keeps_a_measured_related_passage(monkeypatch):
     # qwen run: the right passage for "Adam ... second moment" scored -3.42; unrelated ones -5.2 and below
     monkeypatch.setattr(settings, "retriever", "hybrid")
     assert [h.score for h in retrieval.relevant([_scored(-3.42), _scored(-5.2)])] == [-3.42]
+
+
+def test_index_chunks_writes_media():
+    sid = _src()
+    retrieval.index_chunks(sid, "general", [
+        Block(1, None, "| a |", kind="table"),
+        Block(None, None, "spoken", start_s=75.4),
+        Block(2, None, "plain"),
+    ], video_url="https://youtu.be/abc")
+    retrieval.index_chunks(sid, "general", [Block(3, None, "Figure (p.3): x")],
+                           figure={"image_path": "x.png", "bbox": "1,2,3,4"})
+    with session() as s:
+        rows = s.exec(select(Chunk.text, ChunkMedia).join(ChunkMedia, ChunkMedia.chunk_id == Chunk.id)
+                      .order_by(Chunk.id)).all()
+    got = {text: (m.kind, m.start_s, m.url, m.image_path, m.bbox) for text, m in rows}
+    assert got == {
+        "| a |": ("table", None, None, None, None),
+        "spoken": ("video", 75.4, "https://youtu.be/abc?t=75", None, None),
+        "Figure (p.3): x": ("figure", None, None, "x.png", "1,2,3,4"),
+    }

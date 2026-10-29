@@ -18,6 +18,8 @@ class Block:
     page: Optional[int]
     section_heading: Optional[str]
     text: str
+    kind: str = "text"  # text | table
+    start_s: Optional[float] = None  # video: where this text starts
 
 
 def _lines(doc):

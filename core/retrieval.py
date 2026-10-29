@@ -17,7 +17,7 @@ from qdrant_client import QdrantClient, models
 from sqlmodel import func, select
 
 from core.config import DATA_DIR, settings
-from core.db import Chunk, Source, session
+from core.db import Chunk, ChunkMedia, Source, session
 from core.parse import Block
 
 # name -> (fastembed model, dim, query prefix, document prefix)
@@ -179,8 +179,20 @@ def _upsert(chunks: list[Chunk]) -> None:
             store().upsert(name, points)
 
 
-def index_chunks(source_id: int, topic_id: str, blocks: list[Block]) -> int:
-    """Write Chunk rows, then their Qdrant points. Returns the chunk count."""
+def _media(chunk_id: int, b: Block, video_url: Optional[str], figure: Optional[dict]) -> Optional[ChunkMedia]:
+    if figure:
+        return ChunkMedia(chunk_id=chunk_id, kind="figure", image_path=figure["image_path"], bbox=figure["bbox"])
+    if b.kind == "table":
+        return ChunkMedia(chunk_id=chunk_id, kind="table")
+    if b.start_s is not None:
+        url = f"{video_url}?t={int(b.start_s)}" if video_url else None
+        return ChunkMedia(chunk_id=chunk_id, kind="video", start_s=b.start_s, url=url)
+    return None
+
+
+def index_chunks(source_id: int, topic_id: str, blocks: list[Block],
+                 video_url: Optional[str] = None, figure: Optional[dict] = None) -> int:
+    """Write Chunk rows (and ChunkMedia for figures, tables, video), then their Qdrant points. Returns the count."""
     rows = [
         Chunk(source_id=source_id, topic_id=topic_id, chunker=settings.chunker, ord=i,
               page=b.page, section_heading=b.section_heading, text=b.text)
@@ -193,6 +205,10 @@ def index_chunks(source_id: int, topic_id: str, blocks: list[Block]) -> int:
         s.commit()
         for r in rows:
             s.refresh(r)
+        media = [m for r, b in zip(rows, blocks) if (m := _media(r.id, b, video_url, figure))]
+        if media:
+            s.add_all(media)
+            s.commit()
     _upsert(rows)
     return len(rows)
 
