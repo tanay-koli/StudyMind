@@ -54,7 +54,7 @@ async def test_extract_stores_edges_and_done_rows(monkeypatch):
                     ["E", "x", "F"], ["G", "x", "H"], ["I", "x", "J"], ["K", "x", "L"],
                     ["M", "x", "N"],            # 6th valid triple
                 ]},
-                {"n": 2, "triples": []},
+                {"n": 2, "triples": []}, {"n": 3, "triples": []}, {"n": 4, "triples": []},
             ]})
         return json.dumps({"chunks": [{"n": 1, "triples": [["P", "r", "Q"]]}]})
 
@@ -100,6 +100,68 @@ async def test_deleted_chunk_skipped(monkeypatch):
     with session() as s:
         assert s.exec(select(ConceptEdge)).first() is None
         assert s.exec(select(ConceptExtraction)).first() is None
+
+
+@pytest.mark.asyncio
+async def test_reused_id_with_new_text_not_written(monkeypatch):
+    _, sid, cids = _make_chunks(1)
+
+    async def complete(prompt, system=None, **kw):
+        topics.delete_source(sid)
+        with session() as s:
+            s.add(Chunk(id=cids[0], source_id=99, topic_id="x", chunker="x", ord=0, text="different"))
+            s.commit()
+        return json.dumps({"chunks": [{"n": 1, "triples": [["A", "r", "B"]]}]})
+
+    monkeypatch.setattr(llm, "complete", complete)
+    assert await concepts.extract_pending() == 0
+    with session() as s:
+        assert s.exec(select(ConceptEdge)).first() is None
+        assert s.exec(select(ConceptExtraction)).first() is None
+
+
+@pytest.mark.asyncio
+async def test_string_n_ok_and_omitted_chunk_stays_pending(monkeypatch):
+    _, _, cids = _make_chunks(2)
+    calls = []
+
+    async def complete(prompt, system=None, **kw):
+        calls.append(prompt)
+        return json.dumps({"chunks": [{"n": "1", "triples": [["A", "r", "B"]]}, {"n": "x", "triples": []}]})
+
+    monkeypatch.setattr(llm, "complete", complete)
+    assert await concepts.extract_pending() == 1
+    assert len(calls) == 1  # omitted chunk not retried in the same pass
+    with session() as s:
+        assert [e.chunk_id for e in s.exec(select(ConceptExtraction)).all()] == [cids[0]]
+
+
+@pytest.mark.asyncio
+async def test_unnormalisable_part_rejected(monkeypatch):
+    _make_chunks(1)
+
+    async def complete(prompt, system=None, **kw):
+        return json.dumps({"chunks": [{"n": 1, "triples": [["%", "r", "B"], ["A", "r", "B"]]}]})
+
+    monkeypatch.setattr(llm, "complete", complete)
+    await concepts.extract_pending()
+    with session() as s:
+        assert [e.head for e in s.exec(select(ConceptEdge)).all()] == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_write_failure_does_not_escape(monkeypatch):
+    _make_chunks(1)
+
+    async def complete(prompt, system=None, **kw):
+        return json.dumps({"chunks": [{"n": 1, "triples": [["A", "r", "B"]]}]})
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(llm, "complete", complete)
+    monkeypatch.setattr(concepts, "normalise", boom)
+    assert await concepts.extract_pending() == 0
 
 
 @pytest.mark.asyncio

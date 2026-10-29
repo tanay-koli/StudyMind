@@ -46,7 +46,7 @@ def fake(monkeypatch):
     def install(hits_by_topic, reply="ok"):
         r = FakeRetriever(hits_by_topic)
         state["reply"] = reply
-        monkeypatch.setattr(query, "get_retriever", lambda: r)
+        monkeypatch.setattr(query, "get_retriever", lambda rewrite=True: r)
         return r, state["prompts"]
 
     return install
@@ -206,6 +206,13 @@ def test_topic_names_excluded():
     ids = _planted(2, {0: [("Neural Networks", "use", "Gradients")], 1: [("neural network", "learn", "Gradients")]})
     out = concepts.shared_concepts([ids[0]], [ids[1]], {concepts.normalise("Neural Networks")})
     assert [o.name for o in out] == ["Gradients"]
+
+
+def test_overlap_chunk_alone_shares_nothing():
+    ids = _planted(3, {0: [("Alpha", "r", "Beta")], 1: [("Alpha", "r", "Gamma")]})
+    assert concepts.shared_concepts([ids[0]], [ids[0]], set()) == []
+    out = concepts.shared_concepts([ids[0]], [ids[0], ids[1]], set())  # Alpha also in distinct chunk 1
+    assert [o.name for o in out] == ["Alpha"] and out[0].edge_a.chunk_id != out[0].edge_b.chunk_id
 
 
 def _two_topics(fake, ids, reply="never"):

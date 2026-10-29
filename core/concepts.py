@@ -48,7 +48,7 @@ def _prompt(texts: list[str]) -> str:
 def _valid(t) -> bool:
     return (isinstance(t, (list, tuple)) and len(t) == 3
             and all(isinstance(p, str) and p.strip() and len(p.strip()) <= MAX_PART for p in t)
-            and normalise(t[0]) != normalise(t[2]))
+            and all(normalise(p) for p in t) and normalise(t[0]) != normalise(t[2]))
 
 
 async def extract_pending() -> int:
@@ -65,25 +65,36 @@ async def extract_pending() -> int:
             return done
         try:
             reply = await llm.complete_json(_prompt([c.text for c in batch]), timeout=180)
-            by_n = {r.get("n"): r.get("triples") for r in reply["chunks"]}
+            by_n = {}
+            for r in reply["chunks"]:
+                with contextlib.suppress(TypeError, ValueError):
+                    by_n[int(r["n"])] = r.get("triples")
         except Exception as e:
             # shortcut: a chunk that always fails is retried on every wake/restart, add an attempt count if logs show repeats
             log.warning("concept batch %s failed: %s", [c.id for c in batch], e)
             failed.update(c.id for c in batch)
             continue
-        with session() as s:
-            alive = set(s.exec(select(Chunk.id).where(Chunk.id.in_([c.id for c in batch]))).all())
-            for n, c in enumerate(batch, 1):
-                if c.id not in alive:
-                    continue
-                triples = by_n.get(n)
-                triples = [[p.strip() for p in t] for t in triples if _valid(t)] if isinstance(triples, list) else []
-                for h, r, t in triples[:MAX_TRIPLES]:
-                    s.add(ConceptEdge(chunk_id=c.id, source_id=c.source_id, topic_id=c.topic_id, head=h,
-                                      relation=r, tail=t, head_norm=normalise(h), tail_norm=normalise(t)))
-                s.add(ConceptExtraction(chunk_id=c.id))
-                done += 1
-            s.commit()
+        try:
+            with session() as s:
+                # ids are reused rowids: only write chunks whose text is still what we sent
+                now = dict(s.exec(select(Chunk.id, Chunk.text).where(Chunk.id.in_([c.id for c in batch]))).all())
+                for n, c in enumerate(batch, 1):
+                    if now.get(c.id) != c.text:
+                        continue
+                    if n not in by_n:
+                        failed.add(c.id)  # model omitted it: stay pending, retry next pass
+                        continue
+                    triples = by_n[n]
+                    triples = [[p.strip() for p in t] for t in triples if _valid(t)] if isinstance(triples, list) else []
+                    for h, r, t in triples[:MAX_TRIPLES]:
+                        s.add(ConceptEdge(chunk_id=c.id, source_id=c.source_id, topic_id=c.topic_id, head=h,
+                                          relation=r, tail=t, head_norm=normalise(h), tail_norm=normalise(t)))
+                    s.add(ConceptExtraction(chunk_id=c.id))
+                    done += 1
+                s.commit()
+        except Exception:
+            log.warning("concept write for batch %s failed", [c.id for c in batch], exc_info=True)
+            failed.update(c.id for c in batch)
 
 
 @dataclass
@@ -104,16 +115,21 @@ def shared_concepts(chunks_a: list[int], chunks_b: list[int], exclude: set[str])
         for norm, shown in ((e.head_norm, e.head), (e.tail_norm, e.tail)):
             if norm in exclude:
                 continue
-            f = found.setdefault(norm, {"chunks": set(), "A": None, "B": None, "name": None})
+            f = found.setdefault(norm, {"chunks": set(), "A": {}, "B": {}, "name": None})
             f["chunks"].add(e.chunk_id)
             for side, ids in (("A", a), ("B", b)):
-                if e.chunk_id in ids and f[side] is None:
-                    f[side] = e
-                    if side == "A":
+                if e.chunk_id in ids:
+                    f[side].setdefault(e.chunk_id, e)
+                    if side == "A" and f["name"] is None:
                         f["name"] = shown
-    both = [f for f in found.values() if f["A"] and f["B"]]
-    both.sort(key=lambda f: (-len(f["chunks"]), f["name"]))
-    return [Shared(f["name"], len(f["chunks"]), f["A"], f["B"]) for f in both[:TOP_SHARED]]
+    out = []
+    for f in found.values():
+        # shared needs an A chunk and a different B chunk, else one overlap chunk counts on both sides
+        pair = next(((ea, eb) for ca, ea in f["A"].items() for cb, eb in f["B"].items() if ca != cb), None)
+        if pair:
+            out.append((f, pair))
+    out.sort(key=lambda x: (-len(x[0]["chunks"]), x[0]["name"]))
+    return [Shared(f["name"], len(f["chunks"]), ea, eb) for f, (ea, eb) in out[:TOP_SHARED]]
 
 
 def pending_count(chunk_ids: list[int]) -> int:
