@@ -31,8 +31,8 @@ Done when:
 
 ## Setting
 
-`relevance_min: float = -3.0` in `core/config.py` (env `RELEVANCE_MIN`). It sits between the measured
-top reranker logits: related -1.6 to 4.0, unrelated -5.2 to -6. Hits are relevant when
+`relevance_min: float = -4.0` in `core/config.py` (env `RELEVANCE_MIN`). It sits between the measured
+top reranker logits: related -3.4 to 4.0 (the -3.4 from the Phase 3 qwen run; first set at -3.0), unrelated -5.2 and below. Hits are relevant when
 `score >= relevance_min`. The cutoff applies to hybrid only: dense scores are cosine, so with
 `RETRIEVER=dense` every hit counts as relevant.
 
@@ -85,9 +85,9 @@ and returns the hits as dicts (`dataclasses.asdict`). Phase 5 adds its tools bes
 
 - **route_intent** (no LLM). The UI `intent` hint wins when one is given. Otherwise the first
   match wins, case-insensitive:
-  - `quiz me|test me|quiz` → quiz
-  - `\breview\b` → review
-  - two `topics` given, or `between (.+) and (.+)` / `connect (.+) (with|and|to) (.+)` → connect (the parsed names fill `topics`)
+  - `^quiz` or `quiz me|test me` → quiz (commands only; "the quiz in ch. 3" stays a question)
+  - `^review` or `review me|review my` → review ("the peer review process" stays a question)
+  - two `topics` given, or `(connection|link|relationship|relation) between (.+) and (.+)` ("the difference between TCP and UDP" stays a question) / `connect (.+) (with|and|to) (.+)` → connect (the parsed names fill `topics`)
   - `^(explain|why|how does|how do|what is|what are)\b` → explain
   - otherwise → qa
 

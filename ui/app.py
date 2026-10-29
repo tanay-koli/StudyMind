@@ -687,12 +687,16 @@ with tab_agent:
     if st.session_state.agent_messages is None:
         st.session_state.agent_messages = api("GET", f"/agent/{st.session_state.agent_thread_id}")["messages"]
 
+    # A connect turn clears the picker; otherwise every later message would route to connect
+    if st.session_state.pop("agent_connect_reset", False):
+        st.session_state.agent_connect = []
     col_connect, col_new = st.columns([3, 1])
     with col_connect:
         connect_with = st.multiselect(
-            "Connect with… (optional)",
+            "Connect with… (optional, one message)",
             [t["name"] for t in topics.values()],
             max_selections=2,
+            key="agent_connect",
             help="Pick two topics to ask how they relate.",
         )
     with col_new:
@@ -728,6 +732,7 @@ with tab_agent:
         }
         if len(connect_with) == 2:
             body["topics"] = connect_with
+            st.session_state.agent_connect_reset = True
 
         with st.chat_message("assistant"):
             reply = None

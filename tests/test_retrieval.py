@@ -233,3 +233,9 @@ def test_relevant_passes_everything_for_dense(monkeypatch):
 def test_relevant_accepts_dicts(monkeypatch):
     monkeypatch.setattr(settings, "retriever", "hybrid")
     assert retrieval.relevant([{"score": -6.0}, {"score": 0.0}]) == [{"score": 0.0}]
+
+
+def test_default_cutoff_keeps_a_measured_related_passage(monkeypatch):
+    # qwen run: the right passage for "Adam ... second moment" scored -3.42; unrelated ones -5.2 and below
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    assert [h.score for h in retrieval.relevant([_scored(-3.42), _scored(-5.2)])] == [-3.42]

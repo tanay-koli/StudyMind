@@ -71,10 +71,12 @@ LABELS = {
 }
 
 INTENTS = ("qa", "explain", "connect", "quiz", "review")
-_QUIZ = re.compile(r"\b(quiz|test me)\b", re.I)
-_REVIEW = re.compile(r"\breview\b", re.I)
+# Commands only: "quiz" or "review" inside a question ("the peer review process") stays a question
+_QUIZ = re.compile(r"^\s*quiz\b|\b(quiz|test) me\b", re.I)
+_REVIEW = re.compile(r"^\s*review\b|\breview (me|my)\b", re.I)
 _CONNECT = (
-    re.compile(r"\bbetween (.+?) and (.+)", re.I),
+    # "the difference between TCP and UDP" is a question, not a topic map
+    re.compile(r"\b(?:connections?|links?|relationships?|relations?)\s+between (.+?) and (.+)", re.I),
     re.compile(r"\bconnect (.+?) (?:with|and|to) (.+)", re.I),
 )
 _EXPLAIN = re.compile(r"^\s*(explain|why|how does|how do|what is|what are)\b", re.I)
@@ -139,8 +141,10 @@ async def grade_documents(state: StudyState) -> dict:
 async def rewrite_query(state: StudyState) -> dict:
     history = "\n".join(f"{m['role']}: {m['content']}" for m in state["messages"][-4:])
     tried = ", ".join(repr(q) for q in state["queries_tried"])
+    # Without the topic, a 7B model rewrites "why is it slow" toward whatever it guesses
+    topic = f"The student is studying: {query._topic_name(state['topic_id'])}\n" if state.get("topic_id") else ""
     reply = await llm.complete(
-        f"Recent conversation:\n{history}\n\nQuestion: {state['question']}\n"
+        f"{topic}Recent conversation:\n{history}\n\nQuestion: {state['question']}\n"
         f"Searches that found nothing relevant: {tried}\n\n"
         "Write one short, specific search query that would find the answer. Output only the query.",
         system=REWRITE_SYSTEM,
