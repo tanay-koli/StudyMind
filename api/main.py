@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core import agent, concepts, ingest, query, retrieval, topics
-from core.config import DATA_DIR, check_llm, http_client, set_http_client
+from core.config import DATA_DIR, check_llm, http_client, set_http_client, settings
 from core.llm import setup_tracing
 
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -106,7 +106,7 @@ def _require_topic(topic_id: Optional[str]) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"llm": await check_llm()}
+    return {"llm": await check_llm(), "vision": await check_llm(settings.vision_model)}
 
 
 # ---------------------------------------------------------------------------

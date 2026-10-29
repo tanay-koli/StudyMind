@@ -257,6 +257,7 @@ with st.sidebar:
     # LLM status
     for label, status in (
         (f"LLM ({settings.llm_model})", st.session_state.health["llm"]),
+        (f"Vision ({settings.vision_model})", st.session_state.health["vision"]),
     ):
         st.markdown(f"**{label}:** {get_cloud_status_emoji(status)}")
         if not status["ok"] and status.get("error"):

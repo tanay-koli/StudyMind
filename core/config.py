@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     # Any LiteLLM model string: ollama/gemma3:4b, groq/..., anthropic/...
     llm_model: str = "ollama/qwen2.5:7b"
+    # Captions figures; needs image input
+    vision_model: str = "ollama/qwen2.5vl:7b"
     ollama_base_url: str = "http://localhost:11434"
 
     database_url: str = f"sqlite:///{(DATA_DIR / 'studymind.db').as_posix()}"
@@ -67,13 +69,13 @@ def set_http_client(client: httpx.AsyncClient | None) -> None:
     _client = client
 
 
-async def check_llm(timeout: int = 5) -> dict:
-    """Verify the configured LLM is usable.
+async def check_llm(model: str | None = None, timeout: int = 5) -> dict:
+    """Verify a model (default: the configured LLM) is usable.
 
     For ollama/* models: Ollama must be running and the model pulled.
     Hosted models are not pinged (that would cost a request).
     """
-    model = settings.llm_model
+    model = model or settings.llm_model
     result = {"ok": True, "error": None, "model": model}
     if not model.startswith("ollama/"):
         return result

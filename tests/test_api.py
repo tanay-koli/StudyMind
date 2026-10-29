@@ -33,7 +33,9 @@ def _pdf_bytes(*pages: str) -> bytes:
 
 def test_health(client):
     body = client.get("/health").json()
-    assert list(body) == ["llm"] and body["llm"]["ok"]
+    assert list(body) == ["llm", "vision"] and body["llm"]["ok"]
+    # The mocked Ollama lists only qwen2.5:7b
+    assert body["vision"]["ok"] is False and "ollama pull qwen2.5vl:7b" in body["vision"]["error"]
 
 
 def test_full_flow(client, offline, monkeypatch):

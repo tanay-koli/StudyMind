@@ -6,6 +6,7 @@ ollama/gemma3:4b, groq/..., anthropic/.... Every call logs tokens, cost and
 latency; Langfuse tracing turns on when its keys are set.
 """
 
+import base64
 import json
 import logging
 import os
@@ -36,10 +37,17 @@ def setup_tracing() -> bool:
 
 
 class LLMClient:
-    async def complete(self, prompt: str, system: str | None = None, **kwargs) -> str:
-        """Single-turn completion; returns the text. Raises on provider errors."""
+    async def complete(self, prompt: str, system: str | None = None,
+                       images: list[bytes] | None = None, **kwargs) -> str:
+        """Single-turn completion; returns the text. PNG images go with the prompt. Raises on provider errors."""
         messages = [{"role": "system", "content": system}] if system else []
-        messages.append({"role": "user", "content": prompt})
+        content = prompt
+        if images:
+            content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(img).decode()}}
+                for img in images
+            ]
+        messages.append({"role": "user", "content": content})
 
         model = kwargs.pop("model", settings.llm_model)
         if model.startswith("ollama/"):

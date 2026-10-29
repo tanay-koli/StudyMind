@@ -1,5 +1,6 @@
 """StudyMind — LLMClient: Ollama context window and the JSON helper."""
 
+import base64
 from types import SimpleNamespace
 
 import litellm
@@ -21,6 +22,22 @@ async def test_complete_sets_num_ctx_for_ollama(monkeypatch):
     assert seen["num_ctx"] == 8192
     await LLMClient().complete("q", num_ctx=2048)
     assert seen["num_ctx"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_complete_sends_images_as_data_urls(monkeypatch):
+    seen = {}
+
+    async def fake_acompletion(**kw):
+        seen.update(kw)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))], usage=None)
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    await LLMClient().complete("describe", images=[b"\x89PNG"], model="ollama/qwen2.5vl:7b")
+    content = seen["messages"][-1]["content"]
+    assert content[0] == {"type": "text", "text": "describe"}
+    assert content[1]["image_url"]["url"] == "data:image/png;base64," + base64.b64encode(b"\x89PNG").decode()
+    assert seen["model"] == "ollama/qwen2.5vl:7b" and "images" not in seen
 
 
 @pytest.mark.asyncio
