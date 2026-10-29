@@ -86,6 +86,7 @@ def test_ingest_pdf_upload(client, tmp_path):
     body = resp.json()
     assert body["status"] == "success", body
     assert body["page_count"] == 1
+    assert body["excerpt"].startswith("evil.pdf\n\nGradient descent")
     # The crafted name is reduced to its base name; the upload is not kept after ingest
     assert body["title"] == "evil.pdf"
     assert list((tmp_path / "uploads").iterdir()) == []
