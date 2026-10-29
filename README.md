@@ -12,6 +12,7 @@
 |---------|-------------|
 | **📚 Topics (Notebooks)** | Group your ingested resources into collections (e.g. "ML Course", "DSA Prep") with custom color tags. |
 | **📥 Multi-Source Ingest** | Upload PDFs, YouTube transcripts, web articles, or paste your own notes. PDFs keep page numbers and section headings. |
+| **🖼️ Figures, tables, video times** | Diagrams in PDFs are captioned by a local vision model and cited with the image inline; tables stay searchable as Markdown; YouTube answers cite `@ 12:34` with a link to that moment. |
 | **💡 AI Topic Suggestions** | Suggests which topic new material belongs to via a toast/banner confirmation. |
 | **🤖 Study Agent** | One chat that routes each message (answer, explain, connect topics), rewrites and retries weak searches, and checks its answer against the cited passages. You watch each step as it happens. |
 | **💬 Scoped Q&A with citations** | Ask within one topic or across all; answers cite passages as `[n]` and show clickable chips like `📄 notes.pdf · p.12`. |
@@ -63,6 +64,7 @@ StudyMind/
 │   ├── query.py           # Grounded Q&A, cross-topic, summarize, connect
 │   ├── rewrite.py         # Query rewriting (multi-query, HyDE) around the retriever
 │   ├── concepts.py        # Concept triples (background worker) and topic overlap
+│   ├── figures.py         # Figure crops captioned by the vision model (same worker)
 │   ├── agent.py           # LangGraph agent: routing, retry on weak search, self-check
 │   ├── studyguide.py      # Map-reduce study guide over every section
 │   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
@@ -72,7 +74,7 @@ StudyMind/
 │   └── run.py             # python -m eval.run --retriever hybrid|dense
 ├── ui/
 │   └── app.py             # Streamlit UI — calls the API only
-├── data/                  # studymind.db, agent.db, qdrant/, models/, uploads/, audio/ (git-ignored)
+├── data/                  # studymind.db, agent.db, qdrant/, figures/, models/, uploads/, audio/ (git-ignored)
 └── tests/                 # Offline: Ollama, embedders and reranker are faked
 ```
 
@@ -94,6 +96,7 @@ cd StudyMind
 python -m venv .venv && .venv/Scripts/activate   # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 ollama pull qwen2.5:7b
+ollama pull qwen2.5vl:7b   # figure captions (about 6 GB)
 ```
 
 ### Step 2: Configure (optional)
@@ -102,6 +105,7 @@ Everything has a default. To change it, create a `.env`:
 
 ```env
 LLM_MODEL=ollama/qwen2.5:7b        # or ollama/gemma3:4b, groq/..., anthropic/...
+VISION_MODEL=ollama/qwen2.5vl:7b   # captions PDF figures
 EMBED_MODEL=bge-small              # bge-small | nomic (reindexes on next start)
 CHUNKER=structure                  # structure | fixed
 RETRIEVER=hybrid                   # hybrid | dense (baseline)
@@ -159,6 +163,8 @@ Go to the **📥 Ingest** tab, select your topic dropdown, and add content:
 - **Notes** — Paste raw typed notes.
 
 The content is chunked and indexed locally; a banner then suggests a topic for it.
+
+PDF diagrams (embedded images and drawn diagrams) are cut out and captioned in the background by the vision model; they become searchable a few minutes after the upload, and a cited figure shows its image under the answer. Tables become their own Markdown passages. PDFs added before Phase 4 have no figures: re-add them to get them.
 
 ### 3. Chat with the Agent
 In the **🤖 Agent** tab, just ask. The sidebar topic scopes the search.
