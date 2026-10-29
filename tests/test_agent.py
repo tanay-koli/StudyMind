@@ -2,14 +2,17 @@
 
 import pytest
 
-from core import agent
+from core import agent, topics
 from core.llm import llm
 
 
 @pytest.mark.parametrize("msg,topics,hint,expected", [
     ("quiz me on attention", None, None, ("quiz", [])),
     ("Can you test me?", None, None, ("quiz", [])),
-    ("I want to review today", None, None, ("review", [])),
+    ("Review my weak topics", None, None, ("review", [])),
+    ("Explain the peer review process", None, None, ("explain", [])),     # "review" inside a question
+    ("What does the quiz in ch. 3 cover", None, None, ("qa", [])),          # "quiz" inside a question
+    ("What is the difference between TCP and UDP?", None, None, ("explain", [])),  # "between" is not connect
     ("what links these?", ["Biology", "Chemistry"], None, ("connect", ["Biology", "Chemistry"])),
     ("What is the connection between attention and memory?", None, None, ("connect", ["attention", "memory"])),
     ("connect enzymes with catalysts", None, None, ("connect", ["enzymes", "catalysts"])),
@@ -193,3 +196,13 @@ async def test_second_turn_sees_history_and_fresh_turn_fields(script):
     _, st2 = await run("what about its complexity?")
     assert len(st2["messages"]) == 4 and st2["warning"] is None and st2["retries"] == 1
     assert "what is attention" in log["prompts"][2][0]  # rewrite prompt carries prior messages
+
+
+@pytest.mark.asyncio
+async def test_rewrite_prompt_names_the_topic(script):
+    s, log, run = script
+    tid = topics.create_topic("Deep Learning")["id"]
+    s["search"] = [[_doc(-6.0)], [_doc(2.0)]]
+    s["complete"] = ["attention cost", "A [1]."]
+    await run("why is it slow for long inputs", topic_id=tid)
+    assert "Deep Learning" in log["prompts"][0][0]

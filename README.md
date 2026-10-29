@@ -106,7 +106,7 @@ EMBED_MODEL=bge-small              # bge-small | nomic (reindexes on next start)
 CHUNKER=structure                  # structure | fixed
 RETRIEVER=hybrid                   # hybrid | dense (baseline)
 QUERY_REWRITE=none                 # none | multi | hyde (extra LLM call per question)
-RELEVANCE_MIN=-3.0                 # reranker score a passage needs to count as relevant (hybrid only)
+RELEVANCE_MIN=-4.0                 # reranker score a passage needs to count as relevant (hybrid only)
 AGENT_DB_PATH=data/agent.db        # where agent conversations are kept
 ```
 
