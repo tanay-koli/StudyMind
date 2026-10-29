@@ -168,6 +168,17 @@ def test_ensure_indexed_fills_gaps_after_model_switch(monkeypatch):
     assert (_count(collection="chunks_bge_small"), _count(collection="chunks_nomic")) == (2, 2)
 
 
+def test_ensure_indexed_drops_orphan_points():
+    # e.g. studymind.db deleted to start fresh while data/qdrant was kept
+    retrieval.index_chunks(_src(), "general", [Block(1, None, "alpha")])
+    retrieval.store().upsert(retrieval.collection_name(), [models.PointStruct(
+        id=999, vector={"dense": retrieval.embed_dense(["old"], query=False)[0],
+                        "bm25": retrieval.embed_sparse(["old"], query=False)[0]},
+        payload={"source_id": 999, "topic_id": "general"})])
+    retrieval.ensure_indexed()
+    assert _count(collection="chunks_bge_small") == 1
+
+
 @pytest.mark.asyncio
 async def test_heading_text_is_searchable():
     # Slide titles carry the topic; the body may never repeat it
