@@ -6,16 +6,21 @@ generates with the local LLM over the numbered passages; never one string for bo
   1. ask()              — Q&A over all material, with citations
   2. ask_scoped()       — the same, filtered to one topic
   3. cross_topic_ask()  — primary topic answer + connections from other topics
-  4. connect_topics()   — shared concepts between two topics, as a graph
+  4. connect_topics()   — concepts shared by two topics (stored triples), as a graph
   5. summarize_topic()  — cross-source summary of a free-text topic
 """
 
 import asyncio
 import hashlib
 import re
+from itertools import zip_longest
 from typing import Optional
 
+from sqlmodel import select
+
+from core import concepts
 from core.config import settings
+from core.db import Chunk, session
 from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
 from core.retrieval import Hit, get_retriever
@@ -57,6 +62,25 @@ def _topic_name(topic_id: str) -> str:
     from core.topics import load_topics
 
     return load_topics().get(topic_id, {}).get("name", topic_id)
+
+
+def _topics_with_chunks(topic_ids: list[str]) -> set[str]:
+    with session() as s:
+        return set(s.exec(select(Chunk.topic_id).where(Chunk.topic_id.in_(topic_ids)).distinct()).all())
+
+
+async def _sub_questions(question: str) -> list[str]:
+    """Up to 3 sub-questions the LLM splits a cross-topic question into; [question] if it can't."""
+    try:
+        reply = await llm.complete(
+            f"Split this question into 2 or 3 short, self-contained sub-questions, one per line, "
+            f"each ending in '?'. Output only the sub-questions.\n\nQuestion: {question}"
+        )
+    except Exception:
+        return [question]
+    lines = (re.sub(r"^[-*•\d.)\s]+", "", ln.replace("*", "")).strip() for ln in reply.splitlines())
+    subs = list(dict.fromkeys(ln for ln in lines if ln.endswith("?")))[:3]
+    return subs if len(subs) >= 2 else [question]
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +139,8 @@ async def ask_scoped(question: str, topic_id: str) -> dict:
 async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: list) -> dict:
     """Answer from the primary topic, plus connections from every other topic.
 
-    Retrieves the question per topic (top 6 primary, top 2 each other topic),
-    then generates once over those passages only.
+    Splits the question into sub-questions, retrieves each per topic (top 6
+    primary, top 2 each other topic), then generates once over those passages only.
 
     Returns:
         dict with keys: answer, primary_section, cross_section, sources, citations,
@@ -135,17 +159,29 @@ async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: l
     }
     try:
         retriever = get_retriever()
-        others = [tid for tid in all_topic_ids if tid != primary_topic_id]
+        present = _topics_with_chunks(list(all_topic_ids))
+        no_results = (
+            f"No results found in **{primary_name}** or any other topic. "
+            "Try adding more material or asking a broader question."
+        )
+        if not present:
+            result["answer"] = no_results
+            return result
+        subs = await _sub_questions(question)
+        others = [tid for tid in all_topic_ids if tid != primary_topic_id and tid in present]
+
+        async def per_topic(tid: str, k: int) -> list[Hit]:
+            lists = await asyncio.gather(*(retriever.retrieve(q, tid, k=k) for q in subs))
+            # Round-robin so a later sub-question isn't crowded out by the first one's k hits
+            merged = {h.chunk_id: h for row in zip_longest(*lists) for h in row if h}
+            return list(merged.values())[:k]
+
         primary_hits, *other_lists = await asyncio.gather(
-            retriever.retrieve(question, primary_topic_id, k=6),
-            *(retriever.retrieve(question, tid, k=2) for tid in others),
+            per_topic(primary_topic_id, 6), *(per_topic(tid, 2) for tid in others)
         )
         other_hits = [h for hits in other_lists for h in hits]
         if not primary_hits and not other_hits:
-            result["answer"] = (
-                f"No results found in **{primary_name}** or any other topic. "
-                "Try adding more material or asking a broader question."
-            )
+            result["answer"] = no_results
             return result
 
         ctx_primary, cites_primary = _context(primary_hits)
@@ -209,11 +245,10 @@ async def summarize_topic(topic: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def connect_topics(topic_a: str, topic_b: str) -> dict:
-    """Find and visualize the concepts connecting two topics.
+    """Find and visualize the concepts shared by two topics' retrieved passages.
 
-    Retrieves each topic's passages; when both topics have material, the LLM
-    names the concepts connecting them. Otherwise a clean empty state, so
-    nothing is invented for a topic the material does not cover.
+    Overlap of the stored per-chunk concept triples; no LLM call, so nothing is
+    invented for a topic the material does not cover.
 
     Returns:
         dict with keys: nodes, edges, summary, html_graph, connection_method, error
@@ -226,141 +261,50 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
         "connection_method": "none",
         "error": None,
     }
-
+    pending = ""
     try:
-        retriever = get_retriever()
+        retriever = get_retriever(rewrite=False)  # spec: connect makes no LLM call
         hits_a, hits_b = await asyncio.gather(
-            retriever.retrieve(topic_a, None, k=6),
-            retriever.retrieve(topic_b, None, k=6),
+            retriever.retrieve(topic_a, None, k=concepts.CONNECT_K),
+            retriever.retrieve(topic_b, None, k=concepts.CONNECT_K),
         )
-        if hits_a and hits_b:
-            nodes, edges, summary = await _connect_via_llm(topic_a, topic_b, hits_a, hits_b)
-            if nodes and edges:
-                result.update(
-                    nodes=nodes, edges=edges, summary=summary, connection_method="ai_synthesized",
-                    html_graph=render_pyvis_graph(nodes, edges, topic_a, topic_b),
-                )
-                return result
+        ids = list(dict.fromkeys(h.chunk_id for h in hits_a + hits_b))
+        if (n := concepts.pending_count(ids)):
+            pending = "\n\n" + concepts.PENDING_NOTE.format(n=n, m=len(ids))
+        shared = concepts.shared_concepts(
+            [h.chunk_id for h in hits_a], [h.chunk_id for h in hits_b],
+            {concepts.normalise(topic_a), concepts.normalise(topic_b)},
+        )
+        if shared:
+            by_chunk = {h.chunk_id: h for h in hits_a + hits_b}
+
+            def cite(e) -> str:
+                h = by_chunk[e.chunk_id]
+                return f"{e.head} {e.relation} {e.tail} (📄 {h.source_title}" + (f" · p.{h.page}" if h.page else "") + ")"
+
+            def node(label: str, stype: str, title: str) -> dict:
+                return {"id": _node_id(label), "label": label[:50], "color": SOURCE_COLORS.get(stype, SOURCE_COLORS["default"]),
+                        "source_type": stype, "title": title}
+
+            nodes = [node(topic_a, "topic", f"Topic: {topic_a}"), node(topic_b, "topic", f"Topic: {topic_b}")]
+            edges, lines = [], []
+            for sh in shared:
+                nodes.append(node(sh.name, "shared", sh.name))
+                edges.append({"from_id": _node_id(topic_a), "to_id": _node_id(sh.name), "from_label": topic_a,
+                              "to_label": sh.name, "relationship": sh.edge_a.relation})
+                edges.append({"from_id": _node_id(sh.name), "to_id": _node_id(topic_b), "from_label": sh.name,
+                              "to_label": topic_b, "relationship": sh.edge_b.relation})
+                lines.append(f"- **{sh.name}** — A: {cite(sh.edge_a)}; B: {cite(sh.edge_b)}")
+            result.update(
+                nodes=nodes, edges=edges, summary="\n".join(lines) + pending, connection_method="concept_overlap",
+                html_graph=render_pyvis_graph(nodes, edges, topic_a, topic_b),
+            )
+            return result
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
 
     result["summary"] = (
         f"No connections found between '{topic_a}' and '{topic_b}' "
         f"in your material. Try ingesting more material that covers both topics."
-    )
+    ) + pending
     return result
-
-
-async def _connect_via_llm(topic_a: str, topic_b: str, hits_a: list[Hit], hits_b: list[Hit]) -> tuple:
-    """The LLM names connecting concepts from both topics' passages."""
-    # A chunk retrieved for both topics goes in once
-    seen = {h.chunk_id for h in hits_a}
-    hits_b = [h for h in hits_b if h.chunk_id not in seen]
-    ctx_a, _ = _context(hits_a)
-    ctx_b, _ = _context(hits_b, start=len(hits_a) + 1)
-    reply = await llm.complete(
-        f"Passages about '{topic_a}':\n{ctx_a or '(none)'}\n\n"
-        f"Passages about '{topic_b}':\n{ctx_b or '(none)'}\n\n"
-        f"If the passages for either topic are about a completely different subject, "
-        f"reply exactly NONE.\n"
-        f"Otherwise list up to 4 concepts from these passages that connect '{topic_a}' and "
-        f"'{topic_b}', one per line, exactly as:\nCONCEPT: <name> | REASON: <one sentence>",
-        system="You find connections between study topics using only the given passages.",
-    )
-    if not reply.strip():
-        return [], [], ""
-
-    nodes, edges = _parse_concept_lines(reply, topic_a, topic_b)
-    if len(nodes) <= 2:
-        return [], [], ""
-
-    concept_nodes = [n for n in nodes if n.get("source_type") == "shared"]
-    summary = (
-        f"**Connections suggested by the local LLM** (from passages on both topics):\n\n"
-        + "\n".join(f"- **{n['label']}** — {n.get('title', '')}" for n in concept_nodes)
-    )
-    return nodes, edges, summary
-
-
-def _parse_concept_lines(text: str, topic_a: str, topic_b: str) -> tuple:
-    """Parse an LLM reply into pyvis nodes + edges.
-
-    Expected line format (one per concept):
-        CONCEPT: <name> | REASON: <one sentence>
-
-    Falls back gracefully to any bullet/numbered line.
-    """
-    nodes: list = []
-    edges: list = []
-    seen_ids: set = set()
-
-    def _add_node(label: str, stype: str, title: str = "") -> str:
-        nid = _node_id(label)
-        if nid not in seen_ids:
-            seen_ids.add(nid)
-            nodes.append({
-                "id": nid,
-                "label": label[:50],
-                "color": SOURCE_COLORS.get(stype, SOURCE_COLORS["default"]),
-                "source_type": stype,
-                "title": title or label,
-            })
-        return nid
-
-    id_a = _add_node(topic_a, "topic", f"Topic: {topic_a}")
-    id_b = _add_node(topic_b, "topic", f"Topic: {topic_b}")
-
-    concepts: list = []
-
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-
-        concept_name = ""
-        reason = ""
-        # Small models number, bullet and bold the lines: "1. **CONCEPT:** X | **REASON:** y"
-        plain = re.sub(r"^[-*•\d.)\s]+", "", line.replace("*", "")).strip()
-
-        m = re.match(r"(?i)concept:\s*(.+?)\s*(?:\||\s[–—-]\s)\s*(?:reason:\s*)?(.*)$", plain)
-        if m:
-            concept_name, reason = m.group(1).strip(), m.group(2).strip()
-        elif "|" in plain:
-            left, right = (p.strip() for p in plain.split("|", 1))
-            concept_name = re.sub(r"(?i)^concept:\s*", "", left)
-            reason = re.sub(r"(?i)^reason:\s*", "", right)
-        else:
-            m = re.match(r"^[-*•\d]+[.):]?\s*(.+)$", line)
-            if m:
-                concept_name = re.sub(r"(?i)^concept:\s*", "", m.group(1).replace("*", "").strip())
-
-        if not concept_name:
-            continue
-        if concept_name.lower() in (topic_a.lower(), topic_b.lower()):
-            continue
-        if len(concept_name) > 120:
-            concept_name = concept_name[:120]
-
-        concepts.append((concept_name, reason))
-        if len(concepts) >= 4:
-            break
-
-    for concept_name, reason in concepts:
-        title = f"{concept_name}: {reason}" if reason else concept_name
-        cid = _add_node(concept_name, "shared", title)
-        edges.append({
-            "from_id": id_a,
-            "to_id": cid,
-            "from_label": topic_a,
-            "to_label": concept_name,
-            "relationship": "relates to",
-        })
-        edges.append({
-            "from_id": cid,
-            "to_id": id_b,
-            "from_label": concept_name,
-            "to_label": topic_b,
-            "relationship": "relates to",
-        })
-
-    return nodes, edges

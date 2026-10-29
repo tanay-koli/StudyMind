@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 import pytest
+from sqlmodel import select
 
 from core import db, query, topics
 from core.llm import llm
@@ -38,6 +39,37 @@ def test_move_source_between_topics():
     assert topics.move_source(src["id"], b)["topic_id"] == b
     assert topics.list_sources(a) == []
     assert topics.move_source(src["id"], "missing") is None
+
+
+def _source_with_concepts(topic_id):
+    with db.session() as s:
+        src = db.Source(topic_id=topic_id, source_type="note", title="n")
+        s.add(src)
+        s.commit()
+        ch = db.Chunk(source_id=src.id, topic_id=topic_id, chunker="x", ord=0, text="t")
+        s.add(ch)
+        s.commit()
+        s.add(db.ConceptEdge(chunk_id=ch.id, source_id=src.id, topic_id=topic_id, head="a", relation="r",
+                             tail="b", head_norm="a", tail_norm="b"))
+        s.add(db.ConceptExtraction(chunk_id=ch.id))
+        s.commit()
+        return src.id
+
+
+def test_delete_source_purges_concepts():
+    sid = _source_with_concepts(topics.GENERAL_TOPIC_ID)
+    topics.delete_source(sid)
+    with db.session() as s:
+        assert s.exec(select(db.ConceptEdge)).first() is None
+        assert s.exec(select(db.ConceptExtraction)).first() is None
+
+
+def test_move_source_moves_concepts():
+    b = topics.create_topic("B")["id"]
+    sid = _source_with_concepts(topics.GENERAL_TOPIC_ID)
+    topics.move_source(sid, b)
+    with db.session() as s:
+        assert s.exec(select(db.ConceptEdge)).one().topic_id == b
 
 
 def test_delete_topic_removes_its_sources():
@@ -90,7 +122,6 @@ def llm_calls(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("generate, marker", [
-    (topics.generate_study_guide, "## Key Concepts"),
     (topics.generate_audio_script, "podcast-style"),
 ])
 async def test_generation_retrieves_topic_name_not_instruction(monkeypatch, llm_calls, generate, marker):
@@ -110,17 +141,74 @@ async def test_generation_retrieves_topic_name_not_instruction(monkeypatch, llm_
     assert "self-attention weighs tokens" in llm_calls[0] and marker in llm_calls[0]
 
 
-@pytest.mark.asyncio
-async def test_study_guide_is_cached(llm_calls):
+GUIDE_REPLY = '{"key_points": ["kp"], "terms": [], "overview": "o", "key_concepts": [], "review_questions": []}'
+
+
+@pytest.fixture
+def guide_llm(monkeypatch):
+    calls = []
+
+    async def complete(prompt, system=None, **kw):
+        calls.append(prompt)
+        return GUIDE_REPLY
+
+    monkeypatch.setattr(llm, "complete", complete)
+    return calls
+
+
+async def _topic_with_text(name="Transformers"):
     from core.ingest import ingest_text
 
-    tid = topics.create_topic("Transformers")["id"]
+    tid = topics.create_topic(name)["id"]
     await ingest_text("Self-attention weighs every token", title="L1", topic_id=tid)
+    return tid
 
+
+@pytest.mark.asyncio
+async def test_study_guide_is_cached(guide_llm):
+    from core.studyguide import StudyGuide
+
+    tid = await _topic_with_text()
     first = await topics.generate_study_guide(tid)
+    n = len(guide_llm)
     second = await topics.generate_study_guide(tid)
-    assert first == second == "Generated"
-    assert len(llm_calls) == 1  # second call served from the DB
+    assert first == second and len(guide_llm) == n  # second call served from the DB
+    assert first["data"]["sections"][0]["key_points"] == ["kp"] and "# Study Guide: Transformers" in first["guide"]
+    StudyGuide.model_validate_json(topics.load_topics()[tid]["study_guide"])
+
+
+@pytest.mark.asyncio
+async def test_incomplete_guide_not_cached(monkeypatch):
+    replies = iter(['{"key_points": ["kp"], "terms": []}', "bad"])  # map ok, reduce fails
+
+    async def complete(prompt, system=None, **kw):
+        return next(replies)
+
+    monkeypatch.setattr(llm, "complete", complete)
+    tid = await _topic_with_text()
+    res = await topics.generate_study_guide(tid)
+    assert res["data"]["sections"] and res["data"]["overview"] == ""
+    assert topics.load_topics()[tid]["study_guide"] is None
+
+
+@pytest.mark.asyncio
+async def test_all_units_failing_returns_could_not_generate(monkeypatch):
+    async def complete(prompt, system=None, **kw):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(llm, "complete", complete)
+    tid = await _topic_with_text()
+    res = await topics.generate_study_guide(tid)
+    assert "Could not generate" in res["guide"] and res["data"] is None
+    assert topics.load_topics()[tid]["study_guide"] is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_markdown_cache_regenerated(guide_llm):
+    tid = await _topic_with_text()
+    topics._update_topic(tid, study_guide="## Old markdown guide")
+    res = await topics.generate_study_guide(tid)
+    assert res["data"] is not None and guide_llm
 
 
 @pytest.mark.asyncio
@@ -128,8 +216,8 @@ async def test_study_guide_without_chunks_is_not_cached(llm_calls):
     tid = topics.create_topic("Legacy")["id"]
     topics.add_source(tid, "note", "pre-Phase-1 source")  # a source row with no chunks
 
-    guide = await topics.generate_study_guide(tid)
-    assert "Could not generate" in guide and llm_calls == []
+    res = await topics.generate_study_guide(tid)
+    assert "Could not generate" in res["guide"] and res["data"] is None and llm_calls == []
     assert topics.load_topics()[tid]["study_guide"] is None
 
 

@@ -6,6 +6,7 @@ ollama/gemma3:4b, groq/..., anthropic/.... Every call logs tokens, cost and
 latency; Langfuse tracing turns on when its keys are set.
 """
 
+import json
 import logging
 import os
 import time
@@ -43,6 +44,7 @@ class LLMClient:
         model = kwargs.pop("model", settings.llm_model)
         if model.startswith("ollama/"):
             kwargs.setdefault("api_base", settings.ollama_base_url)
+            kwargs.setdefault("num_ctx", 8192)
 
         start = time.perf_counter()
         resp = await litellm.acompletion(model=model, messages=messages, **kwargs)
@@ -62,6 +64,20 @@ class LLMClient:
             latency,
         )
         return resp.choices[0].message.content or ""
+
+    async def complete_json(self, prompt: str, system: str | None = None, **kwargs) -> dict:
+        """Completion parsed as JSON; returns the first object in the reply."""
+        text = await self.complete(prompt, system, response_format={"type": "json_object"}, **kwargs)
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch == "{":
+                try:
+                    obj, _ = decoder.raw_decode(text, i)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    return obj
+        raise ValueError(f"no JSON object in model reply: {text[:200]!r}")
 
 
 llm = LLMClient()

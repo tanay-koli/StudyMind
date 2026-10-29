@@ -22,7 +22,7 @@ async def test_run_writes_results(tmp_path):
     out = await run.run(dataset, tmp_path / "results", retriever="hybrid", embed="bge-small")
 
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
-    assert out.name.startswith("hybrid-bge-small-")
+    assert out.name.startswith("hybrid-bge-small-none-")
     assert [(r["id"], r["hits"][0]["source_title"], r["error"]) for r in rows] == [("q1", "Opt", None)]
     assert {"page", "chunk_id", "score"} <= rows[0]["hits"][0].keys()
     assert rows[0]["answer"] == "Transformer Models"
