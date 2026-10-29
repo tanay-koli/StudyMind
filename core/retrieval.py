@@ -14,7 +14,7 @@ from functools import lru_cache
 from typing import Optional, Protocol
 
 from qdrant_client import QdrantClient, models
-from sqlmodel import select
+from sqlmodel import func, select
 
 from core.config import DATA_DIR, settings
 from core.db import Chunk, Source, session
@@ -209,10 +209,13 @@ def reindex() -> int:
 def ensure_indexed() -> None:
     """Reindex when the current model's collection is missing chunks (e.g. after switching EMBED_MODEL)."""
     with session() as s:
-        rows = len(s.exec(select(Chunk.id)).all())
+        rows = s.exec(select(func.count(Chunk.id))).one()
     name = collection_name()
     with _lock:
         points = store().count(name).count if store().collection_exists(name) else 0
+        if points > rows:
+            # Upserts never remove orphan points (e.g. the DB was reset, Qdrant kept): rebuild
+            store().delete_collection(name)
     if points != rows:
         reindex()
 
