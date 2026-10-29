@@ -8,14 +8,17 @@ Async functions to ingest study material from four source types. Each function:
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from core import concepts, retrieval
+from core import concepts, figures, retrieval
 from core.chunking import chunk
-from core.parse import Block, parse_pdf, text_blocks
+from core.parse import Block, extract_figures, parse_pdf, text_blocks
 from core.topics import GENERAL_TOPIC_ID, add_source, delete_source
+
+log = logging.getLogger("studymind.ingest")
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,18 @@ async def _store(result: dict, blocks: list[Block]) -> None:
     result["status"] = "success"
     concepts.wake()
     result["excerpt"] = (result["title"] + "\n\n" + "\n\n".join(b.text for b in blocks))[:500]
+
+
+async def _queue_figures(file_path: str, result: dict, blocks: list[Block]) -> int:
+    """Crop the PDF's figures for the caption worker; a failure here never fails the ingest."""
+    try:
+        crops = await asyncio.to_thread(extract_figures, file_path)
+        queued = figures.queue(result["source_id"], result["topic_id"], crops, blocks)
+    except Exception:
+        log.warning("figure extraction failed for %s", result["title"], exc_info=True)
+        return 0
+    concepts.wake()  # _store's wake may already have run its pass
+    return queued
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +104,8 @@ async def ingest_pdf(
 
         result["page_count"] = len({b.page for b in blocks})
         await _store(result, blocks)
+        if result["status"] == "success":
+            result["figures_queued"] = await _queue_figures(file_path, result, blocks)
 
     except Exception as exc:
         result["status"] = "error"

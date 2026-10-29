@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from sqlmodel import select
 
+from core import figures
 from core.db import Chunk, ConceptEdge, ConceptExtraction, session
 from core.llm import llm
 
@@ -145,9 +146,12 @@ _event: asyncio.Event | None = None
 async def _run(event: asyncio.Event) -> None:
     while True:
         try:
+            # One LLM queue: figures first (their chunks then get triples too), so Ollama
+            # doesn't swap between the vision and text models on every batch
+            await figures.caption_pending()
             await extract_pending()
         except Exception:
-            log.exception("concept extraction pass failed")
+            log.exception("figure / concept extraction pass failed")
         await event.wait()
         event.clear()
 

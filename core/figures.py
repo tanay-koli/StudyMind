@@ -1,0 +1,115 @@
+"""
+StudyMind — figure captioning.
+
+Ingest queues each figure crop as a PendingFigure; the background worker sends it
+to the vision model and indexes the caption as a chunk ("Figure (p.N): ...") with
+a ChunkMedia row that links back to the image.
+"""
+
+import asyncio
+import logging
+from pathlib import Path
+from typing import Optional
+
+from sqlmodel import delete, func, select
+
+from core import config, retrieval
+from core.config import settings
+from core.db import PendingFigure, session
+from core.llm import llm
+from core.parse import Block, FigureCrop
+
+log = logging.getLogger("studymind.figures")
+
+MIN_CAPTION = 20
+MAX_ATTEMPTS = 3
+CAPTION_SYSTEM = "You describe figures from study material for a student."
+CAPTION_PROMPT = "Describe this diagram for a student; list its labels and the relationships between them."
+
+
+def _heading_for(page: int, blocks: list[Block]) -> Optional[str]:
+    """Heading of the first block on the page, else of the last block before it."""
+    on_page = [b for b in blocks if b.page == page]
+    if on_page:
+        return on_page[0].section_heading
+    before = [b for b in blocks if b.page is not None and b.page < page]
+    return before[-1].section_heading if before else None
+
+
+def queue(source_id: int, topic_id: str, crops: list[FigureCrop], blocks: list[Block]) -> int:
+    """Save the crops as PNGs and PendingFigure rows; returns how many were queued."""
+    if not crops:
+        return 0
+    folder = config.FIGURE_DIR / str(source_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for n, crop in enumerate(crops):
+        path = folder / f"p{crop.page}_{n}.png"
+        path.write_bytes(crop.png)
+        rows.append(PendingFigure(source_id=source_id, topic_id=topic_id, page=crop.page,
+                                  section_heading=_heading_for(crop.page, blocks),
+                                  bbox=",".join(f"{x:.1f}" for x in crop.bbox), image_path=str(path)))
+    with session() as s:
+        s.add_all(rows)
+        s.commit()
+    return len(rows)
+
+
+def pending_count(source_ids: Optional[list[int]] = None) -> int:
+    with session() as s:
+        q = select(func.count(PendingFigure.id))
+        if source_ids is not None:
+            q = q.where(PendingFigure.source_id.in_(source_ids))
+        return s.exec(q).one()
+
+
+async def caption_pending() -> int:
+    """Caption every pending figure; returns how many became chunks. Stops the pass if the model is unreachable."""
+    with session() as s:
+        ids = s.exec(select(PendingFigure.id).order_by(PendingFigure.id)).all()
+    done = 0
+    for fid in ids:
+        with session() as s:
+            row = s.get(PendingFigure, fid)
+        if row is None:  # its source was deleted meanwhile
+            continue
+        try:
+            png = Path(row.image_path).read_bytes()
+        except OSError:
+            log.warning("figure crop %s is missing; dropping it", row.image_path)
+            _drop(fid)
+            continue
+        prompt = CAPTION_PROMPT + (f"\nIt appears under the heading: {row.section_heading}" if row.section_heading else "")
+        try:
+            reply = await llm.complete(prompt, system=CAPTION_SYSTEM, images=[png],
+                                       model=settings.vision_model, timeout=180)
+        except Exception as e:
+            # Ollama down or the vision model not pulled: not the figure's fault, so no attempt is counted
+            log.warning("vision model unavailable (%s); captioning resumes on the next pass", e)
+            return done
+        caption = " ".join(reply.split())
+        with session() as s:
+            row = s.get(PendingFigure, fid)
+            if row is None:
+                continue
+            if len(caption) < MIN_CAPTION:
+                row.attempts += 1
+                if row.attempts >= MAX_ATTEMPTS:
+                    log.warning("no usable caption for %s after %d tries; dropping it", row.image_path, MAX_ATTEMPTS)
+                    s.delete(row)
+                else:
+                    s.add(row)
+                s.commit()
+                continue
+        block = Block(row.page, row.section_heading, f"Figure (p.{row.page}): {caption}")
+        await asyncio.to_thread(retrieval.index_chunks, row.source_id, row.topic_id, [block],
+                                figure={"image_path": row.image_path, "bbox": row.bbox})
+        _drop(fid)
+        done += 1
+    return done
+
+
+def _drop(fid: int) -> None:
+    with session() as s:
+        s.exec(delete(PendingFigure).where(PendingFigure.id == fid))
+        s.commit()
