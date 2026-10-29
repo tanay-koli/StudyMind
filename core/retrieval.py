@@ -344,9 +344,13 @@ class DenseRetriever:
         return [_hit(c, title, scores[c.id]) for c, title in rows]
 
 
-def get_retriever() -> Retriever:
-    base = DenseRetriever() if settings.retriever == "dense" else HybridRetriever()
-    if settings.query_rewrite == "none":
+def base_retriever() -> Retriever:
+    return DenseRetriever() if settings.retriever == "dense" else HybridRetriever()
+
+
+def get_retriever(rewrite: bool = True) -> Retriever:
+    base = base_retriever()
+    if not rewrite or settings.query_rewrite == "none":
         return base
     from core.rewrite import RewritingRetriever  # rewrite imports this module
 
