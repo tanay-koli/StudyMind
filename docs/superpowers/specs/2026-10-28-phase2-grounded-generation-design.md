@@ -102,7 +102,7 @@ class StudyGuide(BaseModel):
 
 **Cache and API.** `topic.study_guide` stores the `StudyGuide` JSON. A cached value
 that does not parse as a `StudyGuide` (the old Markdown) is stale and regenerated.
-`GET /topics/{id}/study-guide` returns `{"guide": <Markdown rendered from the
+`POST /topics/{id}/study-guide` returns `{"guide": <Markdown rendered from the
 model>, "data": <StudyGuide or null>}`. The UI keeps rendering `guide`; its request
 timeout for this endpoint rises to 900 s.
 
