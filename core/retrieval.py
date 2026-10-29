@@ -270,6 +270,7 @@ class Hit:
     section: Optional[str]
     text: str
     score: float
+    media: Optional[dict] = None  # {kind, image_path, start_s, url} for figures, tables, video
 
 
 class Retriever(Protocol):
@@ -308,8 +309,16 @@ def _hydrate(ids: list[int]) -> list[tuple[Chunk, str]]:
         ).all()
 
 
-def _hit(c: Chunk, title: str, score: float) -> Hit:
-    return Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score))
+def _media_for(ids: list[int]) -> dict[int, dict]:
+    if not ids:
+        return {}
+    with session() as s:
+        rows = s.exec(select(ChunkMedia).where(ChunkMedia.chunk_id.in_(ids))).all()
+    return {m.chunk_id: {"kind": m.kind, "image_path": m.image_path, "start_s": m.start_s, "url": m.url} for m in rows}
+
+
+def _hit(c: Chunk, title: str, score: float, media: dict[int, dict]) -> Hit:
+    return Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score), media.get(c.id))
 
 
 class HybridRetriever:
@@ -343,7 +352,8 @@ class HybridRetriever:
             return []
         scores = rerank(rerank_query or query, [_search_text(c) for c, _ in rows])
         ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
-        return [_hit(c, title, score) for (c, title), score in ranked]
+        media = _media_for([c.id for (c, _), _ in ranked])
+        return [_hit(c, title, score, media) for (c, title), score in ranked]
 
 
 class DenseRetriever:
@@ -367,7 +377,8 @@ class DenseRetriever:
         scores = {p.id: p.score for p in points}
         rows = _hydrate(list(scores)) if scores else []
         rows.sort(key=lambda r: scores[r[0].id], reverse=True)
-        return [_hit(c, title, scores[c.id]) for c, title in rows]
+        media = _media_for([c.id for c, _ in rows])
+        return [_hit(c, title, scores[c.id], media) for c, title in rows]
 
 
 def base_retriever() -> Retriever:

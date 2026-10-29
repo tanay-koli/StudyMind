@@ -112,3 +112,25 @@ async def test_worker_captions_before_concepts(monkeypatch):
     await asyncio.sleep(0.05)
     await concepts.stop()
     assert order[:2] == ["figures", "concepts"]
+
+
+@pytest.mark.asyncio
+async def test_diagram_question_returns_figure_and_page(tmp_path, vision):
+    """Done-when (offline): a question only the diagram answers cites the figure on page 2."""
+    from core import agent, query
+    from tests.pdfs import diagram_only_pdf
+
+    caption = "Flow diagram: citrate is converted to isocitrate by aconitase."
+    vision["replies"] = [caption]
+    await ingest_pdf(str(diagram_only_pdf(tmp_path / "d.pdf")))
+    assert await figures.caption_pending() == 1
+
+    res = await query.ask("what converts citrate to isocitrate?")
+    top = res["citations"][0]
+    assert (top["page"], top["kind"]) == (2, "figure") and top["image_url"].startswith("/figures/")
+
+    async with agent.open_graph(str(tmp_path / "a.db")) as g:
+        cfg = {"configurable": {"thread_id": "t"}}
+        await g.ainvoke({"messages": [], "question": "what converts citrate to isocitrate?", "topics": []}, cfg)
+        st = (await g.aget_state(cfg)).values
+    assert (st["citations"][0]["page"], st["citations"][0]["kind"]) == (2, "figure")

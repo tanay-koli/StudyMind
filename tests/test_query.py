@@ -259,3 +259,20 @@ async def test_connect_no_overlap_empty_state(fake):
     res = await query.connect_topics("a", "b")
     assert res["connection_method"] == "none" and res["nodes"] == []
     assert "No connections found between 'a' and 'b'" in res["summary"]
+
+
+def test_context_labels_media_and_citations_carry_it():
+    hits = [
+        Hit(1, 1, "Slides", 4, None, "Figure (p.4): cycle", 1.0, {"kind": "figure", "image_path": "a.png", "start_s": None, "url": None}),
+        Hit(2, 1, "Slides", 5, None, "| a |", 1.0, {"kind": "table", "image_path": None, "start_s": None, "url": None}),
+        Hit(3, 2, "YouTube: abc", None, None, "spoken", 1.0,
+            {"kind": "video", "image_path": None, "start_s": 754.0, "url": "https://youtu.be/abc?t=754"}),
+        Hit(4, 1, "Slides", 6, None, "plain", 1.0),
+    ]
+    text, cites = query._context(hits)
+    headers = [line for line in text.splitlines() if line.startswith("[")]
+    assert headers == ["[1] Slides, p.4 — Figure", "[2] Slides, p.5 — Table", "[3] YouTube: abc @ 12:34", "[4] Slides, p.6"]
+    assert [(c["kind"], c["image_url"], c["url"]) for c in cites] == [
+        ("figure", "/figures/1", None), ("table", None, None), ("video", None, "https://youtu.be/abc?t=754"),
+        ("text", None, None),
+    ]

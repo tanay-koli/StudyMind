@@ -41,20 +41,40 @@ def _node_id(label: str) -> str:
     return hashlib.md5(label.lower().encode()).hexdigest()[:8]
 
 
+def clock(seconds: float) -> str:
+    """M:SS, or H:MM:SS from an hour."""
+    s = int(seconds)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def _media_label(h: Hit) -> str:
+    m = h.media or {}
+    if m.get("kind") == "video" and m.get("start_s") is not None:
+        return f" @ {clock(m['start_s'])}"
+    return {"figure": " — Figure", "table": " — Table"}.get(m.get("kind"), "")
+
+
 def _context(hits: list[Hit], start: int = 1) -> tuple[str, list[dict]]:
     """Numbered passages for the prompt, and the matching citations."""
     text = "\n\n".join(
         f"[{n}] {h.source_title}"
         + (f", p.{h.page}" if h.page else "")
         + (f" — {h.section}" if h.section else "")
+        + _media_label(h)
         + f"\n{h.text}"
         for n, h in enumerate(hits, start=start)
     )
-    citations = [
-        {"source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id,
-         "score": h.score, "text": h.text}
-        for h in hits
-    ]
+    citations = []
+    for h in hits:
+        m = h.media or {}
+        kind = m.get("kind", "text")
+        citations.append({
+            "source_title": h.source_title, "page": h.page, "chunk_id": h.chunk_id, "score": h.score, "text": h.text,
+            "kind": kind,
+            "image_url": f"/figures/{h.chunk_id}" if kind == "figure" else None,
+            "url": m.get("url"),
+            "start_s": m.get("start_s"),
+        })
     return text, citations
 
 

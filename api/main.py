@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core import agent, concepts, ingest, query, retrieval, topics
+from core.db import ChunkMedia, session
 from core.config import DATA_DIR, check_llm, http_client, set_http_client, settings
 from core.llm import setup_tracing
 
@@ -199,6 +200,20 @@ async def ingest_url(body: UrlIn):
 async def ingest_text(body: TextIn):
     _require_topic(body.topic_id)
     return await ingest.ingest_text(body.text, title=body.title, topic_id=body.topic_id)
+
+
+# ---------------------------------------------------------------------------
+# Figures
+# ---------------------------------------------------------------------------
+
+@app.get("/figures/{chunk_id}")
+def figure(chunk_id: int):
+    # The path comes from the database row only, never from the request
+    with session() as s:
+        media = s.get(ChunkMedia, chunk_id)
+    if media is None or media.kind != "figure" or not media.image_path or not Path(media.image_path).is_file():
+        raise HTTPException(404, "Figure not found")
+    return FileResponse(media.image_path, media_type="image/png")
 
 
 # ---------------------------------------------------------------------------

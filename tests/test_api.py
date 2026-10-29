@@ -229,3 +229,21 @@ def test_agent_error_event_then_next_turn_works(client, monkeypatch):
 
 def test_agent_history_unknown_thread_is_empty(client):
     assert client.get("/agent/nope").json() == {"messages": []}
+
+
+def test_figure_endpoint(client, tmp_path):
+    from core.parse import Block
+
+    sid = topics.add_source("general", "pdf", "slides")["id"]
+    img = tmp_path / "fig.png"
+    img.write_bytes(b"\x89PNG fake")
+    retrieval.index_chunks(sid, "general", [Block(1, None, "Figure (p.1): x")], figure={"image_path": str(img), "bbox": "0,0,1,1"})
+    retrieval.index_chunks(sid, "general", [Block(1, None, "| t |", kind="table")])
+    with session() as s:
+        fig_id, table_id = s.exec(select(Chunk.id).order_by(Chunk.id)).all()
+    resp = client.get(f"/figures/{fig_id}")
+    assert resp.status_code == 200 and resp.headers["content-type"] == "image/png" and resp.content == b"\x89PNG fake"
+    assert client.get(f"/figures/{table_id}").status_code == 404
+    assert client.get("/figures/9999").status_code == 404
+    img.unlink()
+    assert client.get(f"/figures/{fig_id}").status_code == 404
