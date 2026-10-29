@@ -61,15 +61,17 @@ and the `data/figures/<source_id>/` folders. `move_source` also updates `Pending
 A text line whose box lies inside a table's box is not added to prose blocks.
 
 **Figures.** A new function, `extract_figures(path) -> list[FigureCrop]`, with
-`FigureCrop(page: int, bbox: tuple[float, float, float, float], png: bytes, section_heading: Optional[str])`:
+`FigureCrop(page: int, bbox: tuple[float, float, float, float], png: bytes)`:
 - Candidates are the boxes of embedded images (`get_image_info()`) plus `cluster_drawings()` rectangles.
 - Candidates are skipped when they are:
-  - under `MIN_FIGURE_FRAC = 0.15` of the page width or height;
+  - under `MIN_FIGURE_SIDE = 0.08` of the page width or height, or under `MIN_FIGURE_AREA = 0.03` of the page area
+    (a 15% side minimum would drop ordinary wide-and-short flowcharts);
   - over `MAX_FIGURE_AREA = 0.9` of the page area (a background);
   - overlapping a detected table.
 - Overlapping candidates merge into their union. Each page keeps at most `MAX_FIGURES_PER_PAGE = 4`, the largest first.
 - Each crop is `page.get_pixmap(clip=bbox, dpi=150).tobytes("png")`.
-- The section heading is that of the page's first prose block at or above the figure (or the last heading seen).
+- The section heading is assigned at ingest from the parsed blocks: the heading of the first block on the
+  figure's page, else that of the last block before it. Heading detection stays in `parse_pdf` only.
 - The whole function is wrapped: any exception on a page is logged and that page is skipped.
 
 **Chunking (core/chunking.py).** `structure()` merges two blocks only when both are `kind == "text"`.
@@ -104,7 +106,7 @@ Each chunk keeps its first block's `start_s`. `fixed()` keeps the origin block's
 becomes `[{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]`.
 
 Worker: `concepts._run` awaits `figures.caption_pending()` before `extract_pending()` on each pass,
-so new figure chunks also get concept triples. `pending_figures(source_ids) -> int` exists for messages.
+so new figure chunks also get concept triples. `figures.pending_count(source_ids=None) -> int` exists for messages.
 
 ## Retrieval and citations
 
