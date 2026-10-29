@@ -331,11 +331,18 @@ with st.sidebar:
             with st.expander(f"📖 Study Guide: {sg_topic['name']}", expanded=True):
                 # Close button
                 if st.button("Close Guide", key="close_sg"):
+                    st.session_state.pop(f"sg_{sg_tid}", None)
                     st.session_state.active_study_guide_topic = None
                     st.rerun()
 
-                with st.spinner("Generating study guide..."):
-                    guide_content = api("POST", f"/topics/{sg_tid}/study-guide", timeout=900)["guide"]
+                sg_key = f"sg_{sg_tid}"
+                regen = st.button("Regenerate", key="regen_sg")
+                if regen or sg_key not in st.session_state:
+                    with st.spinner("Generating study guide..."):
+                        st.session_state[sg_key] = api(
+                            "POST", f"/topics/{sg_tid}/study-guide", params={"force": "true"} if regen else None,
+                            timeout=900)
+                guide_content = st.session_state[sg_key]["guide"]
 
                 st.markdown(guide_content)
 
