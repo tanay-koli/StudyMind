@@ -7,7 +7,7 @@ live in Qdrant with topic_id in the payload, so search can be scoped to a topic.
 
 Public API
 ----------
-init_db()                                    (create tables, General, import topics.json)
+init_db()                                    (create tables, General)
 load_topics()                                → dict
 create_topic(name) → dict
 delete_topic(topic_id)
@@ -20,7 +20,6 @@ invalidate_caches(topic_id)                 → (clears study_guide + audio)
 """
 
 import asyncio
-import json
 import re
 import hashlib
 from datetime import datetime
@@ -38,7 +37,6 @@ from core.llm import llm
 # Constants
 # ---------------------------------------------------------------------------
 
-LEGACY_TOPICS_FILE = DATA_DIR / "topics.json"
 AUDIO_DIR   = DATA_DIR / "audio"
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -67,27 +65,11 @@ _CACHE_FIELDS = ("study_guide", "study_guide_generated_at", "audio_script", "aud
 # ---------------------------------------------------------------------------
 
 def init_db() -> None:
-    """Create tables, import legacy data/topics.json once, ensure General exists."""
+    """Create tables and ensure General exists."""
     with session() as s:
-        if s.exec(select(Topic)).first() is None and LEGACY_TOPICS_FILE.exists():
-            _import_legacy_json(s)
         if s.get(Topic, GENERAL_TOPIC_ID) is None:
             s.add(Topic(**GENERAL_TOPIC))
         s.commit()
-
-
-def _import_legacy_json(s) -> None:
-    """Copy v1 topics.json into the DB. The JSON file is left as a backup."""
-    try:
-        data = json.loads(LEGACY_TOPICS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    prefixes = {"pdf_": "pdf", "yt_": "youtube", "web_": "web", "note_": "note"}
-    for tid, t in data.items():
-        s.add(Topic(**{k: t.get(k) for k in ("id", "name", "created_at", "color", *_CACHE_FIELDS)}))
-        for ds in t.get("datasets", []):
-            stype = next((v for p, v in prefixes.items() if ds.startswith(p)), "unknown")
-            s.add(Source(topic_id=tid, source_type=stype, title=ds))
 
 
 def load_topics() -> dict:
@@ -131,7 +113,7 @@ def _topic_id(name: str) -> str:
 def create_topic(name: str) -> dict:
     """Create a new topic.
 
-    Returns the new topic dict. If a topic with the same name (or slug)
+    Returns the new topic dict. If a topic with the same name (case-insensitive)
     already exists, returns the existing one without modification.
     """
     topics = load_topics()
@@ -141,8 +123,10 @@ def create_topic(name: str) -> dict:
     for existing in topics.values():
         if existing["name"].lower() == name.strip().lower():
             return existing
-    if tid in topics:
-        return topics[tid]
+    # A different name with the same slug ("C" / "C++") gets its own id
+    base, n = tid, 2
+    while tid in topics:
+        tid, n = f"{base}_{n}", n + 1
 
     topic = Topic(id=tid, name=name.strip(), color=_next_color(topics))
     with session() as s:

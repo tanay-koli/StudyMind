@@ -168,6 +168,17 @@ def test_ensure_indexed_fills_gaps_after_model_switch(monkeypatch):
     assert (_count(collection="chunks_bge_small"), _count(collection="chunks_nomic")) == (2, 2)
 
 
+def test_ensure_indexed_drops_orphan_points():
+    # e.g. studymind.db deleted to start fresh while data/qdrant was kept
+    retrieval.index_chunks(_src(), "general", [Block(1, None, "alpha")])
+    retrieval.store().upsert(retrieval.collection_name(), [models.PointStruct(
+        id=999, vector={"dense": retrieval.embed_dense(["old"], query=False)[0],
+                        "bm25": retrieval.embed_sparse(["old"], query=False)[0]},
+        payload={"source_id": 999, "topic_id": "general"})])
+    retrieval.ensure_indexed()
+    assert _count(collection="chunks_bge_small") == 1
+
+
 @pytest.mark.asyncio
 async def test_heading_text_is_searchable():
     # Slide titles carry the topic; the body may never repeat it
@@ -203,3 +214,28 @@ def test_model_loaders_load_once_under_concurrency(monkeypatch):
         t.join()
     retrieval._load_dense.cache_clear()
     assert len(loads) == 1
+
+
+def _scored(score):
+    return retrieval.Hit(1, 1, "T", 1, None, "x", score)
+
+
+def test_relevant_cuts_below_threshold_for_hybrid(monkeypatch):
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    assert [h.score for h in retrieval.relevant([_scored(2.0), _scored(-3.0), _scored(-5.5)])] == [2.0, -3.0]
+
+
+def test_relevant_passes_everything_for_dense(monkeypatch):
+    monkeypatch.setattr(settings, "retriever", "dense")
+    assert len(retrieval.relevant([_scored(0.1), _scored(-9.0)])) == 2
+
+
+def test_relevant_accepts_dicts(monkeypatch):
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    assert retrieval.relevant([{"score": -6.0}, {"score": 0.0}]) == [{"score": 0.0}]
+
+
+def test_default_cutoff_keeps_a_measured_related_passage(monkeypatch):
+    # qwen run: the right passage for "Adam ... second moment" scored -3.42; unrelated ones -5.2 and below
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    assert [h.score for h in retrieval.relevant([_scored(-3.42), _scored(-5.2)])] == [-3.42]

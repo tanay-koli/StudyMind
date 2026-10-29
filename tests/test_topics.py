@@ -1,8 +1,5 @@
 """StudyMind — topic/source storage (SQLite) and cached generation."""
 
-import json
-import sqlite3
-
 import pytest
 from sqlmodel import select
 
@@ -21,6 +18,13 @@ def test_create_topic_dedupes_by_name():
     b = topics.create_topic("  machine learning ")
     assert a["id"] == b["id"] == "machine_learning"
     assert len(topics.load_topics()) == 2  # General + ML
+
+
+def test_create_topic_names_with_same_slug_stay_separate():
+    ids = [topics.create_topic(n)["id"] for n in ("C", "C++", "C#")]
+    assert len(set(ids)) == 3
+    assert [topics.load_topics()[i]["name"] for i in ids] == ["C", "C++", "C#"]
+    assert topics.create_topic("c++")["id"] == ids[1]
 
 
 def test_new_source_invalidates_caches():
@@ -86,26 +90,6 @@ def test_delete_all_sources():
     assert topics.list_sources() == []
 
 
-def test_legacy_topics_json_is_imported_once(tmp_path, monkeypatch):
-    legacy = tmp_path / "legacy.json"
-    legacy.write_text(json.dumps({
-        "general": {"id": "general", "name": "General", "created_at": "2026-01-01T00:00:00",
-                    "color": "#A4B0BE", "datasets": ["note_test_note"]},
-        "bio": {"id": "bio", "name": "Biology", "created_at": "2026-02-01T00:00:00",
-                "color": "#7C5CFC", "datasets": ["bio"], "study_guide": "cached"},
-    }), encoding="utf-8")
-    monkeypatch.setattr(topics, "LEGACY_TOPICS_FILE", legacy)
-    monkeypatch.setattr(db.settings, "database_url", f"sqlite:///{(tmp_path / 'fresh.db').as_posix()}")
-    db.reset_engine()
-
-    topics.init_db()
-    topics.init_db()  # second start must not duplicate anything
-
-    loaded = topics.load_topics()
-    assert set(loaded) == {"general", "bio"}
-    assert loaded["bio"]["study_guide"] == "cached"
-    assert {s["title"] for s in topics.list_sources("general")} == {"note_test_note"}
-    assert [s["source_type"] for s in topics.list_sources()] == ["note", "unknown"]
 
 
 @pytest.fixture
@@ -219,27 +203,6 @@ async def test_study_guide_without_chunks_is_not_cached(llm_calls):
     res = await topics.generate_study_guide(tid)
     assert "Could not generate" in res["guide"] and res["data"] is None and llm_calls == []
     assert topics.load_topics()[tid]["study_guide"] is None
-
-
-def test_init_db_drops_legacy_dataset_name_column(tmp_path, monkeypatch):
-    path = tmp_path / "old.db"
-    con = sqlite3.connect(path)
-    con.executescript("""
-        CREATE TABLE topic (id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL, created_at VARCHAR NOT NULL,
-            color VARCHAR NOT NULL, study_guide VARCHAR, study_guide_generated_at VARCHAR,
-            audio_script VARCHAR, audio_generated_at VARCHAR);
-        CREATE TABLE source (id INTEGER PRIMARY KEY, topic_id VARCHAR NOT NULL, dataset_name VARCHAR NOT NULL,
-            source_type VARCHAR NOT NULL, title VARCHAR NOT NULL, created_at VARCHAR NOT NULL);
-        INSERT INTO topic VALUES ('general', 'General', '2026-01-01', '#A4B0BE', NULL, NULL, NULL, NULL);
-        INSERT INTO source VALUES (1, 'general', 'note_old', 'note', 'Old note', '2026-01-02');
-    """)
-    con.close()
-    monkeypatch.setattr(db.settings, "database_url", f"sqlite:///{path.as_posix()}")
-    db.reset_engine()
-
-    topics.init_db()
-    topics.add_source("general", "note", "New note")
-    assert [s["title"] for s in topics.list_sources()] == ["Old note", "New note"]
 
 
 @pytest.mark.asyncio

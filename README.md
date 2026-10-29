@@ -13,6 +13,7 @@
 | **📚 Topics (Notebooks)** | Group your ingested resources into collections (e.g. "ML Course", "DSA Prep") with custom color tags. |
 | **📥 Multi-Source Ingest** | Upload PDFs, YouTube transcripts, web articles, or paste your own notes. PDFs keep page numbers and section headings. |
 | **💡 AI Topic Suggestions** | Suggests which topic new material belongs to via a toast/banner confirmation. |
+| **🤖 Study Agent** | One chat that routes each message (answer, explain, connect topics), rewrites and retries weak searches, and checks its answer against the cited passages. You watch each step as it happens. |
 | **💬 Scoped Q&A with citations** | Ask within one topic or across all; answers cite passages as `[n]` and show clickable chips like `📄 notes.pdf · p.12`. |
 | **🔍 Cross-Topic Connections** | Answer from one topic and surface related passages from the others. |
 | **📖 Auto Study Guides** | Map-reduce over every section of a topic: per-section key points, terms, overview and review questions. Exportable to Markdown (`.md`). |
@@ -62,6 +63,7 @@ StudyMind/
 │   ├── query.py           # Grounded Q&A, cross-topic, summarize, connect
 │   ├── rewrite.py         # Query rewriting (multi-query, HyDE) around the retriever
 │   ├── concepts.py        # Concept triples (background worker) and topic overlap
+│   ├── agent.py           # LangGraph agent: routing, retry on weak search, self-check
 │   ├── studyguide.py      # Map-reduce study guide over every section
 │   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
 │   └── graph_utils.py     # Build connection graphs, render pyvis HTML
@@ -70,7 +72,7 @@ StudyMind/
 │   └── run.py             # python -m eval.run --retriever hybrid|dense
 ├── ui/
 │   └── app.py             # Streamlit UI — calls the API only
-├── data/                  # studymind.db, qdrant/, models/, uploads/, audio/ (git-ignored)
+├── data/                  # studymind.db, agent.db, qdrant/, models/, uploads/, audio/ (git-ignored)
 └── tests/                 # Offline: Ollama, embedders and reranker are faked
 ```
 
@@ -104,6 +106,8 @@ EMBED_MODEL=bge-small              # bge-small | nomic (reindexes on next start)
 CHUNKER=structure                  # structure | fixed
 RETRIEVER=hybrid                   # hybrid | dense (baseline)
 QUERY_REWRITE=none                 # none | multi | hyde (extra LLM call per question)
+RELEVANCE_MIN=-4.0                 # reranker score a passage needs to count as relevant (hybrid only)
+AGENT_DB_PATH=data/agent.db        # where agent conversations are kept
 ```
 
 > Set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` to trace every LLM call in Langfuse.
@@ -116,7 +120,7 @@ streamlit run ui/app.py            # UI on http://localhost:8501 (second termina
 ```
 
 The sidebar shows **🟢 Connected** for the LLM when Ollama is running and the model is pulled.
-On first start, an existing `data/topics.json` is imported into `data/studymind.db` (the JSON file is kept as a backup).
+
 Sources added before local indexing existed have no chunks: re-add them to make them searchable.
 The first API start after upgrading backfills concepts with the LLM in the background (roughly one LLM call per 4 chunks); a question can wait up to one batch call while it runs, and the topic map shows "N of M passages are still being processed" until it finishes.
 
@@ -156,13 +160,21 @@ Go to the **📥 Ingest** tab, select your topic dropdown, and add content:
 
 The content is chunked and indexed locally; a banner then suggests a topic for it.
 
-### 3. Ask Questions
+### 3. Chat with the Agent
+In the **🤖 Agent** tab, just ask. The sidebar topic scopes the search.
+- A step list shows what it is doing: searching → checking sources → (rewriting query → searching) → answering → verifying.
+- If the passages it finds score too low, it rewrites the search (at most twice), then says honestly that the material does not cover it.
+- If its answer contains a sentence the passages do not support, it rewrites the answer once, then shows a warning naming the sentence.
+- Pick two topics under **Connect with…**, or ask "connect X with Y", for a topic map. "Quiz me" and "review" arrive in Phase 5.
+- Conversations are kept in `data/agent.db`; **🆕 New conversation** starts a fresh one.
+
+### 4. Ask Questions
 In the **💬 Ask** tab:
 - Choose your scope: **All Topics** or a specific topic notebook.
 - Click a citation chip under an answer to read the exact passage.
 - Toggle **🔍 Find connections across topics** for a two-part answer: your topic first, then related points from the others.
 
-### 4. Topic Study Guides & Audio Overviews
+### 5. Topic Study Guides & Audio Overviews
 In the sidebar next to each topic row:
 - Click `[📖]` (Study Guide) to generate key concepts and review questions. Download the output directly as `.md`.
 - Click `[🎙️]` (Audio Overview) to generate a conversational script and play the voice-over inside Streamlit.

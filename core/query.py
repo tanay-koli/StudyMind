@@ -23,7 +23,7 @@ from core.config import settings
 from core.db import Chunk, session
 from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
-from core.retrieval import Hit, get_retriever
+from core.retrieval import Hit, get_retriever, relevant
 
 CITE_RULES = (
     "You are a study assistant. Answer only from the numbered context passages.\n"
@@ -268,6 +268,8 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
             retriever.retrieve(topic_a, None, k=concepts.CONNECT_K),
             retriever.retrieve(topic_b, None, k=concepts.CONNECT_K),
         )
+        # Without a cutoff an unrelated topic still returns its k nearest chunks, and overlaps get invented
+        hits_a, hits_b = relevant(hits_a), relevant(hits_b)
         ids = list(dict.fromkeys(h.chunk_id for h in hits_a + hits_b))
         if (n := concepts.pending_count(ids)):
             pending = "\n\n" + concepts.PENDING_NOTE.format(n=n, m=len(ids))

@@ -221,6 +221,19 @@ def _two_topics(fake, ids, reply="never"):
 
 
 @pytest.mark.asyncio
+async def test_connect_ignores_irrelevant_hits(fake, monkeypatch):
+    # Same overlap as test_connect_builds_graph_without_llm, but topic b's hits score below the cutoff
+    monkeypatch.setattr(query.settings, "retriever", "hybrid")
+    ids = _planted(4, {0: [("Gradient", "drives", "Learning")], 2: [("Optimiser", "follows", "gradient")]})
+    r, _ = _two_topics(fake, ids)
+    for h in r.hits[("b", None)]:
+        h.score = -6.0
+    res = await query.connect_topics("a", "b")
+    assert res["connection_method"] == "none" and res["nodes"] == []
+    assert "No connections found between 'a' and 'b'" in res["summary"]
+
+
+@pytest.mark.asyncio
 async def test_connect_builds_graph_without_llm(fake):
     ids = _planted(4, {0: [("Gradient", "drives", "Learning")], 2: [("Optimiser", "follows", "gradient")]})
     _, prompts = _two_topics(fake, ids)

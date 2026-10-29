@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     retriever: str = "hybrid"  # hybrid | dense
     query_rewrite: str = "none"  # none | multi | hyde
     qdrant_path: str = (DATA_DIR / "qdrant").as_posix()  # ":memory:" in tests
+    # Reranker logit a hit needs to count as relevant (measured: related -3.4..4.0, unrelated -5.2 and below)
+    relevance_min: float = -4.0
+
+    # Agent conversation checkpoints (own file, so it never contends with studymind.db)
+    agent_db_path: str = (DATA_DIR / "agent.db").as_posix()
 
     # Where the Streamlit UI finds the API
     api_url: str = "http://localhost:8000"
