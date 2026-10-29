@@ -73,16 +73,7 @@ def get_engine() -> Engine:
             connect_args={"check_same_thread": False},
         )
         SQLModel.metadata.create_all(_engine)
-        _drop_legacy_columns(_engine)
     return _engine
-
-
-def _drop_legacy_columns(engine: Engine) -> None:
-    """source.dataset_name (from the removed Cognee backend, NOT NULL) would break inserts on pre-Phase-1 databases."""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(source)")]
-        if "dataset_name" in cols:
-            conn.exec_driver_sql("ALTER TABLE source DROP COLUMN dataset_name")
 
 
 def reset_engine() -> None:

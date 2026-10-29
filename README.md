@@ -116,7 +116,7 @@ streamlit run ui/app.py            # UI on http://localhost:8501 (second termina
 ```
 
 The sidebar shows **🟢 Connected** for the LLM when Ollama is running and the model is pulled.
-On first start, an existing `data/topics.json` is imported into `data/studymind.db` (the JSON file is kept as a backup).
+
 Sources added before local indexing existed have no chunks: re-add them to make them searchable.
 The first API start after upgrading backfills concepts with the LLM in the background (roughly one LLM call per 4 chunks); a question can wait up to one batch call while it runs, and the topic map shows "N of M passages are still being processed" until it finishes.
 
