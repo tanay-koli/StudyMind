@@ -6,15 +6,17 @@ Docs: http://localhost:8000/docs
 """
 
 import asyncio
+import json
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core import concepts, ingest, query, retrieval, topics
+from core import agent, concepts, ingest, query, retrieval, topics
 from core.config import DATA_DIR, check_llm, http_client, set_http_client
 from core.llm import setup_tracing
 
@@ -29,7 +31,9 @@ async def lifespan(app: FastAPI):
     # Catch up after an EMBED_MODEL switch; first run with a new model embeds every chunk
     await asyncio.to_thread(retrieval.ensure_indexed)
     concepts.start()
-    yield
+    async with agent.open_graph() as graph:
+        app.state.agent = graph
+        yield
     await concepts.stop()
     await http_client().aclose()
     set_http_client(None)
@@ -79,6 +83,14 @@ class SummarizeIn(BaseModel):
 
 class MoveIn(BaseModel):
     topic_id: str
+
+
+class AgentIn(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    thread_id: str = Field(min_length=1, max_length=100)
+    topic_id: Optional[str] = None
+    intent: Optional[Literal["qa", "explain", "connect", "quiz", "review"]] = None
+    topics: Optional[list[str]] = Field(default=None, max_length=2)
 
 
 def _require_topic(topic_id: Optional[str]) -> dict:
@@ -162,9 +174,13 @@ async def ingest_pdf(
     if not name.lower().endswith(".pdf"):
         raise HTTPException(400, "Only .pdf files are accepted")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    save_path = UPLOAD_DIR / name
+    # Unique name so same-named uploads don't clash; deleted after ingest so deleting the source forgets it
+    save_path = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
     save_path.write_bytes(await file.read())
-    return await ingest.ingest_pdf(str(save_path), title=title or name, topic_id=topic_id)
+    try:
+        return await ingest.ingest_pdf(str(save_path), title=title or name, topic_id=topic_id)
+    finally:
+        save_path.unlink(missing_ok=True)
 
 
 @app.post("/ingest/youtube")
@@ -239,3 +255,40 @@ async def summarize(body: SummarizeIn):
 @app.post("/connect")
 async def connect(body: ConnectIn):
     return await query.connect_topics(body.topic_a, body.topic_b)
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+@app.post("/agent")
+async def agent_turn(body: AgentIn):
+    """One chat turn, streamed as NDJSON: a line per node, then done (or error)."""
+    graph = app.state.agent
+    cfg = {"configurable": {"thread_id": body.thread_id}}
+    turn = {"messages": [], "question": body.message, "topic_id": body.topic_id,
+            "topics": body.topics or [], "intent_hint": body.intent}
+
+    async def lines():
+        try:
+            async for update in graph.astream(turn, cfg, stream_mode="updates"):
+                for node, out in update.items():
+                    event = {"event": "node", "node": node, "label": agent.LABELS.get(node, node)}
+                    if node == "retrieve":
+                        event["query"] = out["queries_tried"][-1]
+                    elif node == "rewrite_query":
+                        event["query"] = out["query"]
+                    yield json.dumps(event) + "\n"
+            st = (await graph.aget_state(cfg)).values
+            yield json.dumps({"event": "done", **{k: st.get(k) for k in
+                              ("intent", "answer", "citations", "warning", "graph")}}) + "\n"
+        except Exception as exc:
+            yield json.dumps({"event": "error", "error": f"{type(exc).__name__}: {exc}"}) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+@app.get("/agent/{thread_id}")
+async def agent_history(thread_id: str):
+    st = await app.state.agent.aget_state({"configurable": {"thread_id": thread_id}})
+    return {"messages": st.values.get("messages", [])}

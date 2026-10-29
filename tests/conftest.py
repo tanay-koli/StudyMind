@@ -75,7 +75,6 @@ def offline(tmp_path, monkeypatch):
     monkeypatch.setattr(retrieval, "embed_dense", fake_embed_dense)
     monkeypatch.setattr(retrieval, "embed_sparse", fake_embed_sparse)
     monkeypatch.setattr(retrieval, "rerank", fake_rerank)
-    monkeypatch.setattr(topics, "LEGACY_TOPICS_FILE", tmp_path / "topics.json")
     monkeypatch.setattr(topics, "AUDIO_DIR", tmp_path)
 
     async def fake_complete(prompt, system=None, **kwargs):

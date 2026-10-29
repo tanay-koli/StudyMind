@@ -28,7 +28,7 @@ def _register_in_topic(result: dict) -> None:
     result["source_id"] = src["id"]
 
 
-async def _store(result: dict, full_text: str, blocks: list[Block]) -> None:
+async def _store(result: dict, blocks: list[Block]) -> None:
     """Register the source and index its chunks; on failure leave nothing behind."""
     _register_in_topic(result)
     sid = result["source_id"]
@@ -46,7 +46,7 @@ async def _store(result: dict, full_text: str, blocks: list[Block]) -> None:
 
     result["status"] = "success"
     concepts.wake()
-    result["excerpt"] = full_text[:500]
+    result["excerpt"] = (result["title"] + "\n\n" + "\n\n".join(b.text for b in blocks))[:500]
 
 
 # ---------------------------------------------------------------------------
@@ -68,40 +68,27 @@ async def ingest_pdf(
     Returns:
         dict: source_type, title, topic_id, status, error, timestamp, source_id, chunk_count
     """
-    import fitz  # PyMuPDF
-
     if title is None:
         title = Path(file_path).stem
-
 
     result = {
         "source_type": "pdf",
         "title": title,
         "topic_id": topic_id or GENERAL_TOPIC_ID,
-        "file_path": file_path,
         "status": "pending",
         "error": None,
         "timestamp": datetime.now().isoformat(),
     }
 
     try:
-        doc = fitz.open(file_path)
-        pages_text = []
-        for page_num, page in enumerate(doc):
-            text = page.get_text()
-            if text.strip():
-                pages_text.append(f"[Page {page_num + 1}]\n{text}")
-        doc.close()
-
-        if not pages_text:
+        blocks = await asyncio.to_thread(parse_pdf, file_path)
+        if not blocks:
             result["status"] = "error"
             result["error"] = "PDF contains no extractable text."
             return result
 
-        full_text = f"Source: PDF — {title}\n\n" + "\n\n".join(pages_text)
-
-        result["page_count"] = len(pages_text)
-        await _store(result, full_text, await asyncio.to_thread(parse_pdf, file_path))
+        result["page_count"] = len({b.page for b in blocks})
+        await _store(result, blocks)
 
     except Exception as exc:
         result["status"] = "error"
@@ -168,12 +155,7 @@ async def ingest_youtube(
             result["error"] = "No transcript available for this video."
             return result
 
-        full_text = (
-            f"Source: YouTube Video — {video_id}\nURL: {url}\n\n"
-            + " ".join(lines)
-        )
-
-        await _store(result, full_text, text_blocks(" ".join(lines)))
+        await _store(result, text_blocks(" ".join(lines)))
 
     except Exception as exc:
         result["status"] = "error"
@@ -238,11 +220,7 @@ async def ingest_url(
         if metadata and metadata.title:
             result["title"] = metadata.title
 
-        full_text = (
-            f"Source: Web Article — {result['title']}\nURL: {url}\n\n" + extracted
-        )
-
-        await _store(result, full_text, text_blocks(extracted))
+        await _store(result, text_blocks(extracted))
 
     except Exception as exc:
         result["status"] = "error"
@@ -282,9 +260,7 @@ async def ingest_text(
         return result
 
     try:
-        full_text = f"Source: Personal Note — {title}\n\n{text}"
-
-        await _store(result, full_text, text_blocks(text))
+        await _store(result, text_blocks(text))
 
     except Exception as exc:
         result["status"] = "error"

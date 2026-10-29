@@ -1,14 +1,16 @@
 """
 StudyMind — Personal Study Assistant
 =====================================
-Streamlit single-page app with 3 tabs: Ingest, Ask, Connect Topics.
+Streamlit single-page app with 4 tabs: Ingest, Agent, Ask, Connect Topics.
 A thin client: every action is an HTTP call to the StudyMind API.
 
 Run with:  uvicorn api.main:app   (in one terminal)
            streamlit run ui/app.py (in another)
 """
 
+import json
 import sys
+import uuid
 from pathlib import Path
 
 import httpx
@@ -451,8 +453,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Main tabs
-tab_ingest, tab_ask, tab_connect = st.tabs([
+tab_ingest, tab_agent, tab_ask, tab_connect = st.tabs([
     "📥 Ingest Material",
+    "🤖 Agent",
     "💬 Ask Questions",
     "🔗 Connect Topics",
 ])
@@ -670,6 +673,101 @@ with tab_ingest:
                     st.rerun()
                 else:
                     st.error(f"❌ {result.get('error', 'Unknown error')}")
+
+
+# ========================== TAB: AGENT ==========================
+with tab_agent:
+    st.markdown("### 🤖 Study Agent")
+    st.caption("One chat that decides what to do: answer, explain, or connect topics. "
+               "It retries weak searches and checks its answer against your sources.")
+
+    if "agent_thread_id" not in st.session_state:
+        st.session_state.agent_thread_id = str(uuid.uuid4())
+        st.session_state.agent_messages = None
+    if st.session_state.agent_messages is None:
+        st.session_state.agent_messages = api("GET", f"/agent/{st.session_state.agent_thread_id}")["messages"]
+
+    # A connect turn clears the picker; otherwise every later message would route to connect
+    if st.session_state.pop("agent_connect_reset", False):
+        st.session_state.agent_connect = []
+    col_connect, col_new = st.columns([3, 1])
+    with col_connect:
+        connect_with = st.multiselect(
+            "Connect with… (optional, one message)",
+            [t["name"] for t in topics.values()],
+            max_selections=2,
+            key="agent_connect",
+            help="Pick two topics to ask how they relate.",
+        )
+    with col_new:
+        st.markdown("<div style='margin-top: 1.7rem;'></div>", unsafe_allow_html=True)
+        if st.button("🆕 New conversation", key="agent_new", use_container_width=True):
+            st.session_state.agent_thread_id = str(uuid.uuid4())
+            st.session_state.agent_messages = []
+            st.rerun()
+
+    def _render_agent_reply(msg: dict) -> None:
+        st.markdown(msg["content"])
+        if msg.get("warning"):
+            st.warning(msg["warning"])
+        _render_citations(msg.get("citations") or [])
+        if msg.get("graph"):
+            st.components.v1.html(msg["graph"], height=500, scrolling=False)
+
+    for msg in st.session_state.agent_messages:
+        with st.chat_message(msg["role"]):
+            _render_agent_reply(msg)
+
+    agent_question = st.chat_input("Ask, explain, or connect…", key="agent_input")
+    if agent_question:
+        st.session_state.agent_messages.append({"role": "user", "content": agent_question})
+        with st.chat_message("user"):
+            st.markdown(agent_question)
+
+        sel = st.session_state.selected_topic
+        body = {
+            "message": agent_question,
+            "thread_id": st.session_state.agent_thread_id,
+            "topic_id": None if sel == "all_topics" else sel,
+        }
+        if len(connect_with) == 2:
+            body["topics"] = connect_with
+            st.session_state.agent_connect_reset = True
+
+        with st.chat_message("assistant"):
+            reply = None
+            with st.status("Thinking…", expanded=True) as status:
+                try:
+                    with httpx.stream("POST", f"{settings.api_url}/agent", json=body, timeout=900) as resp:
+                        if resp.status_code >= 400:
+                            resp.read()
+                            status.update(label="Failed", state="error")
+                            st.error(f"API error {resp.status_code}: {resp.text[:300]}")
+                        for line in resp.iter_lines() if resp.status_code < 400 else []:
+                            if not line:
+                                continue
+                            event = json.loads(line)
+                            if event["event"] == "node":
+                                step = event["label"] + (f' → "{event["query"]}"' if event.get("query") else "")
+                                st.write(step)
+                                status.update(label=event["label"].capitalize() + "…")
+                            elif event["event"] == "done":
+                                status.update(label="Done", state="complete", expanded=False)
+                                reply = event
+                            else:
+                                status.update(label="Failed", state="error")
+                                st.error(event["error"])
+                except httpx.TransportError:
+                    status.update(label="Failed", state="error")
+                    st.error(
+                        f"Cannot reach the StudyMind API at {settings.api_url}. "
+                        "Start it with: uvicorn api.main:app"
+                    )
+            if reply:
+                msg = {"role": "assistant", "content": reply["answer"], "warning": reply.get("warning"),
+                       "citations": reply.get("citations"), "graph": reply.get("graph")}
+                _render_agent_reply(msg)
+                st.session_state.agent_messages.append(msg)
 
 
 # ========================== TAB 2: ASK ==========================

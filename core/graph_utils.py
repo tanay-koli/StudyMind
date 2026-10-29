@@ -4,11 +4,6 @@ StudyMind — Graph Utilities
 Renders topic-connection graphs as interactive pyvis HTML.
 """
 
-import hashlib
-import tempfile
-from pathlib import Path
-
-
 # ---------------------------------------------------------------------------
 # Color palette for source types
 # ---------------------------------------------------------------------------
@@ -146,34 +141,15 @@ def render_pyvis_graph(
 
     # Add edges
     for edge in edges:
-        edge_color = "#7C5CFC" if edge.get("relationship") == "gap" else "#484f58"
-        dash = edge.get("relationship") == "gap"
-
         net.add_edge(
             edge["from_id"],
             edge["to_id"],
             label=edge.get("relationship", ""),
-            color=edge_color,
-            dashes=dash,
+            color="#484f58",
         )
 
-    # Generate HTML
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".html",
-        delete=False,
-        dir=tempfile.gettempdir(),
-    )
-    tmp.close()
-    net.save_graph(tmp.name)
-
-    with open(tmp.name, "r", encoding="utf-8") as f:
-        html = f.read()
-
-    # Clean up temp file
-    Path(tmp.name).unlink(missing_ok=True)
-
-    return html
+    # The same HTML save_graph writes, without a temp file or copying lib/ into the CWD
+    return net.generate_html()
 
 
 def _empty_graph_html() -> str:

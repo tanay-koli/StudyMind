@@ -1,5 +1,7 @@
 """StudyMind — end-to-end API flow through FastAPI's TestClient (offline)."""
 
+import json
+
 import fitz  # PyMuPDF
 import pytest
 from fastapi.testclient import TestClient
@@ -7,7 +9,7 @@ from fastapi.testclient import TestClient
 import api.main
 from sqlmodel import select
 
-from core import retrieval, topics
+from core import agent, config, retrieval, topics
 from core.db import Chunk, session
 from core.llm import llm
 
@@ -15,6 +17,7 @@ from core.llm import llm
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(api.main, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(config.settings, "agent_db_path", (tmp_path / "agent.db").as_posix())
     with TestClient(api.main.app) as c:
         yield c
 
@@ -86,8 +89,10 @@ def test_ingest_pdf_upload(client, tmp_path):
     body = resp.json()
     assert body["status"] == "success", body
     assert body["page_count"] == 1
-    # The crafted name is reduced to its base name inside the upload dir
-    assert (tmp_path / "uploads" / "evil.pdf").exists()
+    assert body["excerpt"].startswith("evil.pdf\n\nGradient descent")
+    # The crafted name is reduced to its base name; the upload is not kept after ingest
+    assert body["title"] == "evil.pdf"
+    assert list((tmp_path / "uploads").iterdir()) == []
 
 
 def test_ingest_rejects_non_pdf(client):
@@ -179,3 +184,46 @@ def test_moved_source_retrieved_only_in_new_topic(client):
     sid = _ingest(client, t1)
     client.patch(f"/sources/{sid}", json={"topic_id": t2})
     assert (_cited(client, t1), _cited(client, t2)) == ([], ["Bio"])
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+def _events(resp):
+    return [json.loads(line) for line in resp.text.splitlines() if line]
+
+
+def test_agent_streams_nodes_then_done(client, monkeypatch):
+    async def search(q, tid):
+        return [{"chunk_id": 1, "source_id": 1, "source_title": "N", "page": 1,
+                 "section": None, "text": "t", "score": 2.0}]
+
+    async def complete(p, system=None, **kw):
+        return "A [1]."
+
+    monkeypatch.setattr(agent, "search_material", search)
+    monkeypatch.setattr(llm, "complete", complete)
+    resp = client.post("/agent", json={"message": "what is t", "thread_id": "x"})
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    ev = _events(resp)
+    assert [e["node"] for e in ev if e["event"] == "node"][:2] == ["route_intent", "retrieve"]
+    assert ev[1]["label"] == "searching" and ev[1]["query"] == "what is t"
+    assert ev[-1]["event"] == "done" and ev[-1]["answer"] == "A [1]." and ev[-1]["citations"]
+    msgs = client.get("/agent/x").json()["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+
+
+def test_agent_error_event_then_next_turn_works(client, monkeypatch):
+    async def boom(q, tid):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(agent, "search_material", boom)
+    ev = _events(client.post("/agent", json={"message": "q", "thread_id": "y"}))
+    assert ev[-1] == {"event": "error", "error": "RuntimeError: ollama down"}
+    ev = _events(client.post("/agent", json={"message": "quiz me", "thread_id": "y"}))
+    assert ev[-1]["event"] == "done" and ev[-1]["answer"] == agent.DEFERRED
+
+
+def test_agent_history_unknown_thread_is_empty(client):
+    assert client.get("/agent/nope").json() == {"messages": []}
