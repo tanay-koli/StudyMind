@@ -6,6 +6,7 @@ Docs: http://localhost:8000/docs
 """
 
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
@@ -162,9 +163,13 @@ async def ingest_pdf(
     if not name.lower().endswith(".pdf"):
         raise HTTPException(400, "Only .pdf files are accepted")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    save_path = UPLOAD_DIR / name
+    # Unique name so same-named uploads don't clash; deleted after ingest so deleting the source forgets it
+    save_path = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
     save_path.write_bytes(await file.read())
-    return await ingest.ingest_pdf(str(save_path), title=title or name, topic_id=topic_id)
+    try:
+        return await ingest.ingest_pdf(str(save_path), title=title or name, topic_id=topic_id)
+    finally:
+        save_path.unlink(missing_ok=True)
 
 
 @app.post("/ingest/youtube")
