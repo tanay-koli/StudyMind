@@ -31,13 +31,13 @@ def _register_in_topic(result: dict) -> None:
     result["source_id"] = src["id"]
 
 
-async def _store(result: dict, blocks: list[Block]) -> None:
+async def _store(result: dict, blocks: list[Block], **index_kw) -> None:
     """Register the source and index its chunks; on failure leave nothing behind."""
     _register_in_topic(result)
     sid = result["source_id"]
     try:
         result["chunk_count"] = await asyncio.to_thread(
-            lambda: retrieval.index_chunks(sid, result["topic_id"], chunk(blocks))
+            lambda: retrieval.index_chunks(sid, result["topic_id"], chunk(blocks), **index_kw)
         )
     except Exception as exc:
         # Roll back so a failed source never half-exists (also purges its chunks)
@@ -162,17 +162,19 @@ async def ingest_youtube(
         ytt_api = YouTubeTranscriptApi()
         transcript = await asyncio.to_thread(ytt_api.fetch, video_id)
 
-        lines = []
+        # One block per snippet so each chunk keeps the start time of its first snippet
+        blocks = []
         for snippet in transcript:
             text = snippet.text if hasattr(snippet, "text") else str(snippet.get("text", ""))
-            lines.append(text)
+            if text.strip():
+                blocks.append(Block(None, None, text.strip(), start_s=getattr(snippet, "start", None)))
 
-        if not lines:
+        if not blocks:
             result["status"] = "error"
             result["error"] = "No transcript available for this video."
             return result
 
-        await _store(result, text_blocks(" ".join(lines)))
+        await _store(result, blocks, video_url=f"https://youtu.be/{video_id}")
 
     except Exception as exc:
         result["status"] = "error"
