@@ -131,7 +131,7 @@ def _topic_id(name: str) -> str:
 def create_topic(name: str) -> dict:
     """Create a new topic.
 
-    Returns the new topic dict. If a topic with the same name (or slug)
+    Returns the new topic dict. If a topic with the same name (case-insensitive)
     already exists, returns the existing one without modification.
     """
     topics = load_topics()
@@ -141,8 +141,10 @@ def create_topic(name: str) -> dict:
     for existing in topics.values():
         if existing["name"].lower() == name.strip().lower():
             return existing
-    if tid in topics:
-        return topics[tid]
+    # A different name with the same slug ("C" / "C++") gets its own id
+    base, n = tid, 2
+    while tid in topics:
+        tid, n = f"{base}_{n}", n + 1
 
     topic = Topic(id=tid, name=name.strip(), color=_next_color(topics))
     with session() as s:

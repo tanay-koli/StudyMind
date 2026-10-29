@@ -23,6 +23,13 @@ def test_create_topic_dedupes_by_name():
     assert len(topics.load_topics()) == 2  # General + ML
 
 
+def test_create_topic_names_with_same_slug_stay_separate():
+    ids = [topics.create_topic(n)["id"] for n in ("C", "C++", "C#")]
+    assert len(set(ids)) == 3
+    assert [topics.load_topics()[i]["name"] for i in ids] == ["C", "C++", "C#"]
+    assert topics.create_topic("c++")["id"] == ids[1]
+
+
 def test_new_source_invalidates_caches():
     tid = topics.create_topic("Physics")["id"]
     topics._update_topic(tid, study_guide="old guide")
