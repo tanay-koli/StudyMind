@@ -99,8 +99,7 @@ and returns the hits as dicts (`dataclasses.asdict`). Phase 5 adds its tools bes
 - **generate** (one LLM call). `_context(hits)` and `ANSWER_SYSTEM` come from `core.query`. The explain
   intent uses `EXPLAIN_SYSTEM = CITE_RULES + "Explain step by step for a student, ..." + the same
   not-in-material sentence`. When `unsupported` is set (a regeneration), the prompt adds:
-  "These sentences were not supported by the passages; drop or fix them: ...". Appends the
-  assistant message.
+  "These sentences were not supported by the passages; drop or fix them: ...".
 - **self_check** (one `complete_json` call). Input: the answer and the numbered passages. Output:
   `{"unsupported": ["sentence", ...]}`. It is skipped (supported) when the answer starts with
   "This isn't in your material". A parse failure counts as supported and is logged.
@@ -108,6 +107,8 @@ and returns the hits as dicts (`dataclasses.asdict`). Phase 5 adds its tools bes
 - **connect**: calls `query.connect_topics(a, b)`. Answer = its `summary`, plus `graph` = `html_graph`
   for the UI.
 - **deferred**: answer = "Quizzes and reviews are coming in Phase 5."
+- **respond**: the single exit. It appends `{"role": "assistant", "content": answer}` to `messages`,
+  so a regeneration never leaves two assistant messages.
 
 ### Edges
 
@@ -120,10 +121,11 @@ grade_documents → generate          if any relevant documents
                 → not_found         if none and retries == 2
 rewrite_query → retrieve
 generate → self_check
-self_check → END                    if unsupported is empty
+self_check → respond                if unsupported is empty
            → generate               if unsupported and not regenerated (sets regenerated)
-           → END with warning       if unsupported and regenerated
-connect, deferred, not_found → END
+           → respond with warning   if unsupported and regenerated
+connect, deferred, not_found → respond
+respond → END
 ```
 
 The warning text is "Some statements may not be supported by your material: ...", listing the flagged
