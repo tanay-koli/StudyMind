@@ -19,6 +19,7 @@ synthesize_audio(topic_id, script) → Path | None
 invalidate_caches(topic_id)                 → (clears study_guide + audio)
 """
 
+import asyncio
 import json
 import re
 import hashlib
@@ -341,7 +342,7 @@ async def generate_study_guide(topic_id: str, force: bool = False) -> dict:
             "Add some study material first using the Ingest tab."
         ), "data": None}
 
-    unit_list = studyguide.units(topic_id)
+    unit_list = await asyncio.to_thread(studyguide.units, topic_id)
     guide, complete = await studyguide.build(topic["name"], unit_list)
 
     if not unit_list or all(s.key_points == [studyguide.FAILED_POINT] for s in guide.sections):

@@ -88,3 +88,18 @@ def test_render_markdown_contains_sections():
     assert md.startswith("# Study Guide: Topic")
     for part in ("Over", "## Sections", "### A (Book · p.1-2)", "- kp", "## Key Concepts", "## Terms", "## Review Questions"):
         assert part in md
+
+@pytest.mark.asyncio
+async def test_empty_reduce_not_complete(monkeypatch):
+    _fake(monkeypatch, lambda p, n: GOOD, {})
+    guide, complete = await build("Topic", UNIT_LIST)
+    assert complete is False and guide.overview == "" and len(guide.sections) == 2
+
+
+@pytest.mark.asyncio
+async def test_reduce_input_truncated(monkeypatch):
+    monkeypatch.setattr(studyguide, "REDUCE_TOKENS", 5)
+    calls = _fake(monkeypatch, lambda p, n: GOOD, {"overview": "o"})
+    await build("Topic", UNIT_LIST)
+    body = calls[-1].split(chr(10) * 2, 1)[1]
+    assert len(body.split()) == 5 and "Terms" not in body
