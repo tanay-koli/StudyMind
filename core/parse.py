@@ -2,15 +2,25 @@
 StudyMind — Structured parsing into blocks that keep page and section heading.
 """
 
+import logging
 from dataclasses import dataclass
 from statistics import median
 from typing import Optional
 
 import pymupdf
 
+log = logging.getLogger("studymind.parse")
+
 HEADING_SIZE_RATIO = 1.2
 HEADING_MAX_WORDS = 12
 _BOLD = 16  # PyMuPDF span flag
+
+# Figures, as fractions of the page: big enough to matter, not a full-page background
+MIN_FIGURE_SIDE = 0.08
+MIN_FIGURE_AREA = 0.03
+MAX_FIGURE_AREA = 0.9
+MAX_FIGURES_PER_PAGE = 4
+FIGURE_DPI = 150
 
 
 @dataclass
@@ -106,6 +116,59 @@ def parse_pdf(path: str) -> list[Block]:
             pages.setdefault(page, []).append(text)
         blocks += [Block(p, None, "\n".join(t)) for p, t in pages.items()]
     return blocks
+
+
+@dataclass
+class FigureCrop:
+    page: int
+    bbox: tuple[float, float, float, float]
+    png: bytes
+
+
+def _merge(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
+    """Union overlapping rectangles until none overlap."""
+    rects = [pymupdf.Rect(r) for r in rects]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                if rects[i].intersects(rects[j]):
+                    rects[i] |= rects.pop(j)
+                    merged = True
+                    break
+            if merged:
+                break
+    return rects
+
+
+def _page_figures(page) -> list[FigureCrop]:
+    full = page.rect
+    page_area = full.width * full.height
+    tables = [box for box, _ in _tables(page)]
+    candidates = [pymupdf.Rect(i["bbox"]) & full for i in page.get_image_info()]
+    candidates += [pymupdf.Rect(r) & full for r in page.cluster_drawings()]
+    # Backgrounds and table rulings out before merging, or they would swallow everything they touch
+    candidates = [r for r in candidates if not r.is_empty and r.get_area() <= MAX_FIGURE_AREA * page_area
+                  and not any(r.intersects(t) for t in tables)]
+    figures = [r for r in _merge(candidates)
+               if r.width >= MIN_FIGURE_SIDE * full.width and r.height >= MIN_FIGURE_SIDE * full.height
+               and MIN_FIGURE_AREA * page_area <= r.get_area() <= MAX_FIGURE_AREA * page_area]
+    figures = sorted(figures, key=lambda r: r.get_area(), reverse=True)[:MAX_FIGURES_PER_PAGE]
+    return [FigureCrop(page.number + 1, tuple(r), page.get_pixmap(clip=r, dpi=FIGURE_DPI).tobytes("png"))
+            for r in figures]
+
+
+def extract_figures(path: str) -> list[FigureCrop]:
+    """Crops of embedded images and vector diagrams; a page that fails is logged and skipped."""
+    crops: list[FigureCrop] = []
+    with pymupdf.open(path) as doc:
+        for page in doc:
+            try:
+                crops += _page_figures(page)
+            except Exception:
+                log.warning("figure extraction failed on page %d of %s", page.number + 1, path, exc_info=True)
+    return crops
 
 
 def text_blocks(text: str) -> list[Block]:

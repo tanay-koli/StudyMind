@@ -9,8 +9,8 @@ DIAGRAM_RECT = pymupdf.Rect(100, 260, 480, 360)
 IMAGE_RECT = pymupdf.Rect(100, 420, 250, 570)
 
 
-def png(size: int = 64, gray: int = 200) -> bytes:
-    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, size, size), 0)
+def png(width: int = 64, height: int = 64, gray: int = 200) -> bytes:
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height), 0)
     pix.clear_with(gray)
     return pix.tobytes("png")
 
@@ -75,10 +75,10 @@ def diagram_only_pdf(path: Path) -> Path:
 
 
 def scanned_pdf(path: Path) -> Path:
-    """One page that is a single full-page image, no text."""
+    """One page that is a single full-page image (page-shaped, as a scan is), no text."""
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_image(page.rect, stream=png(256, 240))
+    page.insert_image(page.rect, stream=png(595, 842, 240))
     doc.save(path)
     doc.close()
     return path
