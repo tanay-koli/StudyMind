@@ -263,7 +263,7 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
     }
     pending = ""
     try:
-        retriever = get_retriever()
+        retriever = get_retriever(rewrite=False)  # spec: connect makes no LLM call
         hits_a, hits_b = await asyncio.gather(
             retriever.retrieve(topic_a, None, k=concepts.CONNECT_K),
             retriever.retrieve(topic_b, None, k=concepts.CONNECT_K),
