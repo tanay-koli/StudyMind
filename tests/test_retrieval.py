@@ -214,3 +214,22 @@ def test_model_loaders_load_once_under_concurrency(monkeypatch):
         t.join()
     retrieval._load_dense.cache_clear()
     assert len(loads) == 1
+
+
+def _scored(score):
+    return retrieval.Hit(1, 1, "T", 1, None, "x", score)
+
+
+def test_relevant_cuts_below_threshold_for_hybrid(monkeypatch):
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    assert [h.score for h in retrieval.relevant([_scored(2.0), _scored(-3.0), _scored(-5.5)])] == [2.0, -3.0]
+
+
+def test_relevant_passes_everything_for_dense(monkeypatch):
+    monkeypatch.setattr(settings, "retriever", "dense")
+    assert len(retrieval.relevant([_scored(0.1), _scored(-9.0)])) == 2
+
+
+def test_relevant_accepts_dicts(monkeypatch):
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    assert retrieval.relevant([{"score": -6.0}, {"score": 0.0}]) == [{"score": 0.0}]

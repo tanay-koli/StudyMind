@@ -262,6 +262,13 @@ class Retriever(Protocol):
     ) -> list[Hit]: ...
 
 
+def relevant(hits: list) -> list:
+    """Hits (or hit dicts) that clear the reranker cutoff; all of them for the dense retriever (cosine scores)."""
+    if settings.retriever == "dense":
+        return list(hits)
+    return [h for h in hits if (h.score if isinstance(h, Hit) else h["score"]) >= settings.relevance_min]
+
+
 def rrf(rankings: list[list[int]], k: int = RRF_K) -> list[int]:
     """Reciprocal Rank Fusion: sum of 1 / (k + rank) over rankings, rank from 1."""
     scores: dict[int, float] = {}
