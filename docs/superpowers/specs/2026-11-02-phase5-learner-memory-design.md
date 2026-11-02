@@ -100,8 +100,12 @@ class Question(BaseModel):
   - One retry; then `None`.
   - `kind` alternates `mcq`, `short`, `mcq`, … by question number.
 - **`grade(question, answer, facts) -> tuple[Optional[str], str]`** returns `(verdict, feedback)`.
-  - **Mcq:** the answer matches when its first letter A–D (case-insensitive, after stripping `()` and `.`)
-    is the right one, or when it equals the right option text (case-insensitive).
+  - **Mcq:** the chosen letter is found in this order:
+    1. a reply that is just one letter A–D (any case, after stripping `()` and `.`) is that letter;
+    2. otherwise, the first standalone uppercase A–D in the reply ("I think it's B because a cell…" → B);
+    3. otherwise, a case-insensitive match with an option's text.
+
+    The answer is correct when that letter is the right one.
     - Correct: `("correct", "")` with no LLM call.
     - Wrong: one `complete` call explains why the right option is correct, from the chunk, in at most
       2 sentences. The verdict is `"wrong"`.

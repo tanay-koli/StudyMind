@@ -25,7 +25,7 @@
 ## Review Focus
 
 1. **A quiz answered after the material was deleted:** the current question's chunk is gone, and `grade` must still work. Grading uses the question's stored citation text, not a fresh chunk lookup. Test in Task 4.
-2. **An answer like "I think it's B because…" to a multiple-choice question:** the first-letter rule would read "I". The rule must take a standalone letter A–D (`\b[A-D]\b` after stripping `()` and `.`) before falling back to option text. Test in Task 4.
+2. **An answer like "I think it's B because a cell…" to a multiple-choice question:** a first-letter rule would read "I", and a last-letter rule would read "a". The spec's order applies: a one-letter reply, else the first standalone uppercase A–D, else option text. Test in Task 4.
 3. **Learner facts from a quiz answer** ("my answer is B"): never stored, because `remember` skips `quiz_answer` turns. Test in Task 6.
 4. **Review with a topic selected while the weak concepts live in another topic:** the review returns nothing for this topic and says so, not concepts from elsewhere. Test in Task 3.
 5. **The same concept appears in two quiz targets** (two chunks share it): the targets are distinct by concept. Test in Task 3.
@@ -102,14 +102,14 @@
   - `test_generate_valid_mcq_and_short`: fake JSON → a `Question` with `chunk_id`, `concept` and a `citation` whose `chunk_id` matches; `facts` appears in the system prompt.
   - `test_generate_rejects_bad_mcq_twice`: 3 options twice → `None`, with 2 calls.
   - `test_mcq_letter_forms` (Review Focus 2):
-    - `"b"`, `"(B)"`, `"B."`, `"I think it's B because..."` → `"B"`;
+    - `"b"`, `"(B)"`, `"B."`, `"I think it's B because a cell..."` → `"B"`;
     - the full text of option C → `"C"`;
     - `"no idea"` → None.
   - `test_grade_mcq_correct_makes_no_call` / `test_grade_mcq_wrong_explains_once`.
   - `test_grade_short_verdicts`: the fake rubric gives each verdict → passed through. Invalid twice → `(None, "Couldn't grade this answer.")`.
   - `test_grade_uses_stored_citation_text` (Review Focus 1): delete the chunk row, then grade a short answer → the rubric prompt still contains the citation text.
 - [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.** `_mcq_letter`: strip `()` and `.`, then search `\b([A-Da-d])\b`. Accept a single letter, or a letter after "is"/"it's" — use the last standalone A–D token in the answer, so "I think it's B" → B. Otherwise, case-insensitive equality with an option's text. The citation comes from `query._context([hit])[1][0]`, where `hit` is built from the chunk and source title.
+- [ ] **Step 3: Implement.** `_mcq_letter` follows the spec's three-step order: a one-letter reply (any case, after stripping `()` and `.`), else `re.search(r"\b([A-D])\b", answer)` (uppercase only), else option text. The citation comes from `query._context([hit])[1][0]`, where `hit` is built from the chunk and source title.
 - [ ] **Step 4: Full suite.** Expected: all pass.
 - [ ] **Step 5: Commit** `feat: generate quiz questions and grade answers (mcq by letter, short by rubric)`
 
