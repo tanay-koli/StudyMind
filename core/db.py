@@ -73,7 +73,9 @@ class ChunkMedia(SQLModel, table=True):
 
 
 class PendingFigure(SQLModel, table=True):
-    # A figure crop waiting for the vision model; becomes a Chunk + ChunkMedia once captioned
+    # A figure crop waiting for the vision model; becomes a Chunk + ChunkMedia once captioned.
+    # AUTOINCREMENT: ids are never reused, so a row deleted mid-caption can't be mistaken for a new upload's
+    __table_args__ = {"sqlite_autoincrement": True}
     id: Optional[int] = Field(default=None, primary_key=True)
     source_id: int = Field(index=True)
     topic_id: str

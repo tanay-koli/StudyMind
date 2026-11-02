@@ -28,8 +28,17 @@ def vision(monkeypatch):
             raise reply
         return reply
 
+    async def reachable(model=None, timeout=5):
+        return {"ok": state.get("reachable", True), "error": None if state.get("reachable", True) else "down", "model": model}
+
     monkeypatch.setattr(llm, "complete", complete)
+    monkeypatch.setattr(figures, "check_llm", reachable)
     return state
+
+
+def _chunks():
+    with session() as s:
+        return s.exec(select(Chunk).order_by(Chunk.id)).all()
 
 
 def _pending():
@@ -43,7 +52,7 @@ async def test_ingest_pdf_queues_figures(tmp_path):
     assert result["status"] == "success" and result["figures_queued"] == 2
     rows = _pending()
     assert len(rows) == 2 and {r.section_heading for r in rows} == {"Krebs Cycle"}
-    assert all(Path(r.image_path).is_file() and Path(r.image_path).parent.parent == config.FIGURE_DIR for r in rows)
+    assert all((config.FIGURE_DIR / r.image_path).is_file() and r.image_path.startswith(f"{r.source_id}/") for r in rows)
     assert figures.pending_count([result["source_id"]]) == 2
 
 
@@ -57,7 +66,7 @@ async def test_caption_success_indexes_figure_chunk(tmp_path, vision):
                       .where(ChunkMedia.kind == "figure")).all()
     assert len(rows) == 2
     assert all(c.text == f"Figure (p.1): {CAPTION}" and c.page == 1 and m.kind == "figure"
-               and Path(m.image_path).is_file() for c, m in rows)
+               and (config.FIGURE_DIR / m.image_path).is_file() for c, m in rows)
     call = vision["calls"][0]
     assert call["model"] == settings.vision_model and call["images"][0].startswith(b"\x89PNG")
     assert "Krebs Cycle" in call["prompt"]
@@ -77,11 +86,54 @@ async def test_short_caption_counts_attempts_and_drops_at_three(tmp_path, vision
 
 
 @pytest.mark.asyncio
-async def test_llm_error_leaves_row_untouched(tmp_path, vision):
+async def test_unreachable_vision_model_skips_the_pass(tmp_path, vision):
     await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
-    vision["replies"] = [ConnectionError("ollama down")]
+    vision["reachable"] = False
     assert await figures.caption_pending() == 0
-    assert [r.attempts for r in _pending()] == [0, 0] and len(vision["calls"]) == 1
+    assert [r.attempts for r in _pending()] == [0, 0] and vision["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_one_failing_figure_does_not_block_the_rest(tmp_path, vision):
+    # e.g. a 180 s timeout or an Ollama 500 on one image, with the model otherwise fine
+    await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
+    vision["replies"] = [RuntimeError("500 from ollama"), CAPTION]
+    assert await figures.caption_pending() == 1
+    assert [r.attempts for r in _pending()] == [1]
+
+
+@pytest.mark.asyncio
+async def test_reused_ids_do_not_give_a_new_upload_the_old_caption(tmp_path, vision, monkeypatch):
+    """Delete A while its figure is being captioned, upload B: SQLite would reuse A's ids for B."""
+    from tests.pdfs import diagram_only_pdf
+
+    a = await ingest_pdf(str(diagram_only_pdf(tmp_path / "a.pdf")))
+
+    async def complete(prompt, system=None, **kw):
+        if not any(c.text.startswith("Figure") for c in _chunks()) and _pending()[0].source_id == a["source_id"]                 and not vision.get("swapped"):
+            vision["swapped"] = True
+            topics.delete_source(a["source_id"])
+            await ingest_pdf(str(diagram_only_pdf(tmp_path / "b.pdf")))
+            return "Caption of figure A: citrate becomes isocitrate."
+        return "Caption of figure B: citrate becomes isocitrate."
+
+    monkeypatch.setattr(llm, "complete", complete)
+    await figures.caption_pending()
+    await figures.caption_pending()
+    texts = [c.text for c in _chunks() if c.text.startswith("Figure")]
+    assert texts == ["Figure (p.2): Caption of figure B: citrate becomes isocitrate."] and _pending() == []
+
+
+@pytest.mark.asyncio
+async def test_crops_survive_moving_the_data_folder(tmp_path, vision, monkeypatch):
+    import shutil
+
+    await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
+    assert not any(Path(r.image_path).is_absolute() for r in _pending())
+    moved = tmp_path / "moved_figures"
+    shutil.move(str(config.FIGURE_DIR), moved)
+    monkeypatch.setattr(config, "FIGURE_DIR", moved)
+    assert await figures.caption_pending() == 2
 
 
 @pytest.mark.asyncio

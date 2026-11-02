@@ -8,13 +8,12 @@ a ChunkMedia row that links back to the image.
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Optional
 
 from sqlmodel import delete, func, select
 
 from core import config, retrieval
-from core.config import settings
+from core.config import check_llm, settings
 from core.db import PendingFigure, session
 from core.llm import llm
 from core.parse import Block, FigureCrop
@@ -44,11 +43,11 @@ def queue(source_id: int, topic_id: str, crops: list[FigureCrop], blocks: list[B
     folder.mkdir(parents=True, exist_ok=True)
     rows = []
     for n, crop in enumerate(crops):
-        path = folder / f"p{crop.page}_{n}.png"
-        path.write_bytes(crop.png)
+        rel = f"{source_id}/p{crop.page}_{n}.png"  # relative to FIGURE_DIR, so moving the data folder keeps it
+        (config.FIGURE_DIR / rel).write_bytes(crop.png)
         rows.append(PendingFigure(source_id=source_id, topic_id=topic_id, page=crop.page,
                                   section_heading=_heading_for(crop.page, blocks),
-                                  bbox=",".join(f"{x:.1f}" for x in crop.bbox), image_path=str(path)))
+                                  bbox=",".join(f"{x:.1f}" for x in crop.bbox), image_path=rel))
     with session() as s:
         s.add_all(rows)
         s.commit()
@@ -64,9 +63,16 @@ def pending_count(source_ids: Optional[list[int]] = None) -> int:
 
 
 async def caption_pending() -> int:
-    """Caption every pending figure; returns how many became chunks. Stops the pass if the model is unreachable."""
+    """Caption every pending figure; returns how many became chunks. Skips the pass if the model is unreachable."""
     with session() as s:
         ids = s.exec(select(PendingFigure.id).order_by(PendingFigure.id)).all()
+    if not ids:
+        return 0
+    status = await check_llm(settings.vision_model)
+    if not status["ok"]:
+        # Ollama down or the vision model not pulled: not the figures' fault, so no attempt is counted
+        log.warning("vision model unavailable (%s); captioning resumes on the next pass", status["error"])
+        return 0
     done = 0
     for fid in ids:
         with session() as s:
@@ -74,20 +80,19 @@ async def caption_pending() -> int:
         if row is None:  # its source was deleted meanwhile
             continue
         try:
-            png = Path(row.image_path).read_bytes()
+            png = (config.FIGURE_DIR / row.image_path).read_bytes()
         except OSError:
             log.warning("figure crop %s is missing; dropping it", row.image_path)
             _drop(fid)
             continue
         prompt = CAPTION_PROMPT + (f"\nIt appears under the heading: {row.section_heading}" if row.section_heading else "")
         try:
-            reply = await llm.complete(prompt, system=CAPTION_SYSTEM, images=[png],
-                                       model=settings.vision_model, timeout=180)
+            caption = " ".join((await llm.complete(prompt, system=CAPTION_SYSTEM, images=[png],
+                                                   model=settings.vision_model, timeout=180)).split())
         except Exception as e:
-            # Ollama down or the vision model not pulled: not the figure's fault, so no attempt is counted
-            log.warning("vision model unavailable (%s); captioning resumes on the next pass", e)
-            return done
-        caption = " ".join(reply.split())
+            # The model is up (checked above), so this image is the problem: count it, don't block the queue
+            log.warning("captioning %s failed: %s", row.image_path, e)
+            caption = ""
         with session() as s:
             row = s.get(PendingFigure, fid)
             if row is None:

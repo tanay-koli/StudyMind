@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core import agent, concepts, ingest, query, retrieval, topics
+from core import agent, concepts, config, ingest, query, retrieval, topics
 from core.db import ChunkMedia, session
 from core.config import DATA_DIR, check_llm, http_client, set_http_client, settings
 from core.llm import setup_tracing
@@ -211,9 +211,10 @@ def figure(chunk_id: int):
     # The path comes from the database row only, never from the request
     with session() as s:
         media = s.get(ChunkMedia, chunk_id)
-    if media is None or media.kind != "figure" or not media.image_path or not Path(media.image_path).is_file():
+    path = config.FIGURE_DIR / media.image_path if media and media.image_path else None  # stored relative
+    if media is None or media.kind != "figure" or path is None or not path.is_file():
         raise HTTPException(404, "Figure not found")
-    return FileResponse(media.image_path, media_type="image/png")
+    return FileResponse(path, media_type="image/png")
 
 
 # ---------------------------------------------------------------------------
