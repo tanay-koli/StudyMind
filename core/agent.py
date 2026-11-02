@@ -121,9 +121,8 @@ async def route_intent(state: StudyState) -> dict:
     question = state["question"]
     intent, topics = classify(question, state.get("topics"), state.get("intent_hint"))
     return {
-        "messages": [{"role": "user", "content": question}],
         "intent": intent, "topics": topics, "query": question,
-        # per-turn fields start fresh; messages carry the conversation
+        # per-turn fields start fresh; messages carry the conversation (respond saves this turn)
         "queries_tried": [], "found": 0, "documents": [], "answer": "", "citations": [], "graph": None,
         "retries": 0, "regenerated": False, "unsupported": [], "warning": None,
     }
@@ -203,7 +202,9 @@ async def deferred(state: StudyState) -> dict:
 
 async def respond(state: StudyState) -> dict:
     warning = f"{WARNING} " + "; ".join(state["unsupported"]) if state["unsupported"] else None
-    return {"messages": [{"role": "assistant", "content": state["answer"]}], "warning": warning}
+    # Question and answer are saved together, so an interrupted turn leaves no unanswered question
+    return {"messages": [{"role": "user", "content": state["question"]},
+                         {"role": "assistant", "content": state["answer"]}], "warning": warning}
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +224,11 @@ def _after_grade(state: StudyState) -> str:
     return "rewrite_query"
 
 
+def _after_rewrite(state: StudyState) -> str:
+    # Nothing new to search for: the same weak search would just run again
+    return "not_found" if state["query"] in state["queries_tried"] else "retrieve"
+
+
 def _after_check(state: StudyState) -> str:
     return "generate" if state["unsupported"] and not state["regenerated"] else "respond"
 
@@ -236,7 +242,7 @@ def build(checkpointer):
     g.add_conditional_edges("route_intent", _after_route, ["retrieve", "connect", "deferred"])
     g.add_edge("retrieve", "grade_documents")
     g.add_conditional_edges("grade_documents", _after_grade, ["generate", "rewrite_query", "not_found"])
-    g.add_edge("rewrite_query", "retrieve")
+    g.add_conditional_edges("rewrite_query", _after_rewrite, ["retrieve", "not_found"])
     g.add_edge("generate", "self_check")
     g.add_conditional_edges("self_check", _after_check, ["generate", "respond"])
     for node in ("not_found", "connect", "deferred"):

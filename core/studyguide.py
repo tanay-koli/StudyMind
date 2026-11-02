@@ -86,7 +86,8 @@ def units(topic_id: str) -> list[Unit]:
     with session() as s:
         rows = s.exec(
             select(Chunk, Source.title).join(Source, Source.id == Chunk.source_id)
-            .where(Chunk.topic_id == topic_id).order_by(Chunk.source_id, Chunk.ord)
+            # page before ord: a figure caption is indexed alone, later, so its ord is always 0
+            .where(Chunk.topic_id == topic_id).order_by(Chunk.source_id, Chunk.page, Chunk.ord)
         ).all()
 
     by_source: dict[int, list] = {}

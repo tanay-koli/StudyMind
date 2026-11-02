@@ -180,3 +180,13 @@ class TestYouTubeTimestamps:
         result = await ingest_youtube("https://youtu.be/old111")
         assert result["status"] == "success" and result["chunk_count"] >= 1
         assert all(m is None for _, m in self._media())
+
+
+    @pytest.mark.asyncio
+    async def test_youtube_dict_snippets_keep_start_time(self, monkeypatch):
+        from core.ingest import ingest_youtube
+
+        self._fake_api(monkeypatch, [{"text": "old api snippet", "start": 42.0}])
+        await ingest_youtube("https://youtu.be/dict42")
+        [(_, m)] = self._media()
+        assert (m.kind, m.start_s, m.url) == ("video", 42.0, "https://youtu.be/dict42?t=42")

@@ -588,8 +588,12 @@ with tab_ingest:
                         icon="📄",
                     )
                     if result.get("figures_queued"):
-                        st.info(f"🖼️ {result['figures_queued']} figures queued for captioning — "
-                                "searchable in a few minutes.")
+                        if st.session_state.health["vision"]["ok"]:
+                            st.info(f"🖼️ {result['figures_queued']} figures queued for captioning — "
+                                    "searchable in a few minutes.")
+                        else:
+                            st.warning(f"🖼️ {result['figures_queued']} figures are waiting for the vision model: "
+                                       f"{st.session_state.health['vision']['error']}")
                     # Trigger AI topic suggestion
                     sug = suggest(result["excerpt"])
                     if sug:

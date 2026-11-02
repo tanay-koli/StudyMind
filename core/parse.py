@@ -76,9 +76,16 @@ def _lines(doc, tables: dict[int, list]):
                 yield page.number + 1, b_idx, text, size, bold, rect.y0
 
 
-def parse_pdf(path: str) -> list[Block]:
+def pdf_tables(path: str) -> dict[int, list[tuple[pymupdf.Rect, str]]]:
+    """{page: [(box, markdown)]}; computed once at ingest and shared by parse_pdf and extract_figures."""
     with pymupdf.open(path) as doc:
-        tables = {page.number + 1: t for page in doc if (t := _tables(page))}
+        return {page.number + 1: t for page in doc if (t := _tables(page))}
+
+
+def parse_pdf(path: str, tables: Optional[dict] = None) -> list[Block]:
+    if tables is None:
+        tables = pdf_tables(path)
+    with pymupdf.open(path) as doc:
         lines = list(_lines(doc, tables))
     pending = [(p, box.y0, md) for p, ts in sorted(tables.items()) for box, md in ts]
     if not lines:
@@ -142,10 +149,9 @@ def _merge(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     return rects
 
 
-def _page_figures(page) -> list[FigureCrop]:
+def _page_figures(page, tables: list[pymupdf.Rect]) -> list[FigureCrop]:
     full = page.rect
     page_area = full.width * full.height
-    tables = [box for box, _ in _tables(page)]
     candidates = [pymupdf.Rect(i["bbox"]) & full for i in page.get_image_info()]
     candidates += [pymupdf.Rect(r) & full for r in page.cluster_drawings()]
     # Backgrounds and table rulings out before merging, or they would swallow everything they touch
@@ -159,13 +165,17 @@ def _page_figures(page) -> list[FigureCrop]:
             for r in figures]
 
 
-def extract_figures(path: str) -> list[FigureCrop]:
-    """Crops of embedded images and vector diagrams; a page that fails is logged and skipped."""
+def extract_figures(path: str, tables: Optional[dict] = None) -> list[FigureCrop]:
+    """Crops of embedded images and vector diagrams; a page that fails is logged and skipped.
+
+    Pass pdf_tables(path) when parse_pdf already has it: find_tables costs ~0.3 s a page.
+    """
     crops: list[FigureCrop] = []
     with pymupdf.open(path) as doc:
         for page in doc:
             try:
-                crops += _page_figures(page)
+                boxes = tables.get(page.number + 1, []) if tables is not None else _tables(page)
+                crops += _page_figures(page, [box for box, _ in boxes])
             except Exception:
                 log.warning("figure extraction failed on page %d of %s", page.number + 1, path, exc_info=True)
     return crops

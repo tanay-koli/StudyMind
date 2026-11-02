@@ -15,7 +15,7 @@ from typing import Optional
 
 from core import concepts, figures, retrieval
 from core.chunking import chunk
-from core.parse import Block, extract_figures, parse_pdf, text_blocks
+from core.parse import Block, extract_figures, parse_pdf, pdf_tables, text_blocks
 from core.topics import GENERAL_TOPIC_ID, add_source, delete_source
 
 log = logging.getLogger("studymind.ingest")
@@ -52,10 +52,10 @@ async def _store(result: dict, blocks: list[Block], **index_kw) -> None:
     result["excerpt"] = (result["title"] + "\n\n" + "\n\n".join(b.text for b in blocks))[:500]
 
 
-async def _queue_figures(file_path: str, result: dict, blocks: list[Block]) -> int:
+async def _queue_figures(file_path: str, result: dict, blocks: list[Block], tables: dict) -> int:
     """Crop the PDF's figures for the caption worker; a failure here never fails the ingest."""
     try:
-        crops = await asyncio.to_thread(extract_figures, file_path)
+        crops = await asyncio.to_thread(extract_figures, file_path, tables)
         queued = figures.queue(result["source_id"], result["topic_id"], crops, blocks)
     except Exception:
         log.warning("figure extraction failed for %s", result["title"], exc_info=True)
@@ -96,7 +96,8 @@ async def ingest_pdf(
     }
 
     try:
-        blocks = await asyncio.to_thread(parse_pdf, file_path)
+        tables = await asyncio.to_thread(pdf_tables, file_path)  # shared: find_tables is ~0.3 s a page
+        blocks = await asyncio.to_thread(parse_pdf, file_path, tables)
         if not blocks:
             result["status"] = "error"
             result["error"] = "PDF contains no extractable text."
@@ -105,7 +106,7 @@ async def ingest_pdf(
         result["page_count"] = len({b.page for b in blocks})
         await _store(result, blocks)
         if result["status"] == "success":
-            result["figures_queued"] = await _queue_figures(file_path, result, blocks)
+            result["figures_queued"] = await _queue_figures(file_path, result, blocks, tables)
 
     except Exception as exc:
         result["status"] = "error"
@@ -165,9 +166,12 @@ async def ingest_youtube(
         # One block per snippet so each chunk keeps the start time of its first snippet
         blocks = []
         for snippet in transcript:
-            text = snippet.text if hasattr(snippet, "text") else str(snippet.get("text", ""))
+            if hasattr(snippet, "text"):
+                text, start = snippet.text, getattr(snippet, "start", None)
+            else:  # older API: plain dicts
+                text, start = str(snippet.get("text", "")), snippet.get("start")
             if text.strip():
-                blocks.append(Block(None, None, text.strip(), start_s=getattr(snippet, "start", None)))
+                blocks.append(Block(None, None, text.strip(), start_s=start))
 
         if not blocks:
             result["status"] = "error"

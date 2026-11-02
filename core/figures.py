@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from sqlmodel import delete, func, select
+from sqlmodel import delete, select
 
 from core import config, retrieval
 from core.config import check_llm, settings
@@ -52,14 +52,6 @@ def queue(source_id: int, topic_id: str, crops: list[FigureCrop], blocks: list[B
         s.add_all(rows)
         s.commit()
     return len(rows)
-
-
-def pending_count(source_ids: Optional[list[int]] = None) -> int:
-    with session() as s:
-        q = select(func.count(PendingFigure.id))
-        if source_ids is not None:
-            q = q.where(PendingFigure.source_id.in_(source_ids))
-        return s.exec(q).one()
 
 
 async def caption_pending() -> int:
@@ -111,6 +103,9 @@ async def caption_pending() -> int:
                                 figure={"image_path": row.image_path, "bbox": row.bbox})
         _drop(fid)
         done += 1
+        # A study guide or audio script cached before this caption existed would never show the figure
+        from core.topics import invalidate_caches  # topics → query → concepts → figures: import here
+        invalidate_caches(row.topic_id)
     return done
 
 

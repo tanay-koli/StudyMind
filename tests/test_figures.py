@@ -53,7 +53,6 @@ async def test_ingest_pdf_queues_figures(tmp_path):
     rows = _pending()
     assert len(rows) == 2 and {r.section_heading for r in rows} == {"Krebs Cycle"}
     assert all((config.FIGURE_DIR / r.image_path).is_file() and r.image_path.startswith(f"{r.source_id}/") for r in rows)
-    assert figures.pending_count([result["source_id"]]) == 2
 
 
 @pytest.mark.asyncio
@@ -186,3 +185,30 @@ async def test_diagram_question_returns_figure_and_page(tmp_path, vision):
         await g.ainvoke({"messages": [], "question": "what converts citrate to isocitrate?", "topics": []}, cfg)
         st = (await g.aget_state(cfg)).values
     assert (st["citations"][0]["page"], st["citations"][0]["kind"]) == (2, "figure")
+
+
+@pytest.mark.asyncio
+async def test_captioned_figure_clears_cached_study_guide(tmp_path, vision):
+    result = await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
+    tid = result["topic_id"]
+    topics._update_topic(tid, study_guide="cached before the figures existed", audio_script="old")
+    await figures.caption_pending()
+    t = topics.load_topics()[tid]
+    assert t["study_guide"] is None and t["audio_script"] is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_finds_tables_once_per_page(tmp_path, monkeypatch):
+    import pymupdf
+
+    calls = []
+    real = pymupdf.Page.find_tables
+
+    def counting(self, *a, **kw):
+        calls.append(self.number)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pymupdf.Page, "find_tables", counting)
+    result = await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
+    assert result["figures_queued"] == 2
+    assert sorted(calls) == [0, 1]  # both pages have drawings; each is searched once

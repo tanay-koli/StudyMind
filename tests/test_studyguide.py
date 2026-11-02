@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from sqlmodel import select
 
 from core import studyguide
 from core.db import Chunk, Source, session
@@ -28,6 +29,21 @@ def test_units_group_by_section_and_pack(monkeypatch):
 
     monkeypatch.setattr(studyguide, "UNIT_TOKENS", 3)
     assert [u.headings for u in units("general")] == [["A"], ["B", "C"]]
+
+
+def test_figure_captions_sit_with_their_page(monkeypatch):
+    # A captioned figure is indexed on its own later, so its ord is 0; it must still land on its page
+    from core import retrieval
+    from core.parse import Block
+
+    monkeypatch.setattr(studyguide, "UNIT_TOKENS", 3)
+    seed([("Intro", 1, "i1 i2"), ("Cycle", 3, "c1 c2"), ("End", 5, "e1 e2")], title="Deck")
+    with session() as s:
+        sid = s.exec(select(Source.id)).one()
+    retrieval.index_chunks(sid, "general", [Block(5, "End", "Figure (p.5): x")],
+                           figure={"image_path": "1/p5_0.png", "bbox": "0,0,1,1"})
+    assert [(u.headings, u.pages) for u in units("general")] == [
+        (["Intro"], "1"), (["Cycle"], "3"), (["End"], "5"), (["End"], "5")]
 
 
 def test_units_split_oversized_section(monkeypatch):
