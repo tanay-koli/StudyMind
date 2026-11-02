@@ -3,8 +3,9 @@
 import pytest
 from sqlmodel import select
 
-from core import db, query, topics
+from core import config, db, query, retrieval, topics
 from core.llm import llm
+from core.parse import Block
 from core.retrieval import Hit
 
 
@@ -230,3 +231,34 @@ async def test_grounded_output_has_no_passage_markers(monkeypatch):
 
     assert await topics.generate_audio_script(tid) == "Gradient descent steps downhill. It uses a learning rate."
     assert "square brackets" not in systems[0]
+
+
+def _source_with_figures(topic_id):
+    sid = topics.add_source(topic_id, "pdf", "slides")["id"]
+    retrieval.index_chunks(sid, topic_id, [Block(1, None, "Figure (p.1): x")],
+                           figure={"image_path": "p1_0.png", "bbox": "0,0,1,1"})
+    folder = config.FIGURE_DIR / str(sid)
+    folder.mkdir(parents=True)
+    (folder / "p1_0.png").write_bytes(b"png")
+    with db.session() as s:
+        s.add(db.PendingFigure(source_id=sid, topic_id=topic_id, page=2, bbox="0,0,1,1",
+                               image_path=str(folder / "p2_0.png")))
+        s.commit()
+    return sid, folder
+
+
+def test_delete_source_removes_media_pending_and_crops():
+    sid, folder = _source_with_figures(topics.GENERAL_TOPIC_ID)
+    topics.delete_source(sid)
+    with db.session() as s:
+        assert s.exec(select(db.ChunkMedia)).first() is None
+        assert s.exec(select(db.PendingFigure)).first() is None
+    assert not folder.exists()
+
+
+def test_move_source_moves_pending_figures():
+    sid, _ = _source_with_figures(topics.GENERAL_TOPIC_ID)
+    b = topics.create_topic("B")["id"]
+    topics.move_source(sid, b)
+    with db.session() as s:
+        assert s.exec(select(db.PendingFigure.topic_id)).all() == [b]

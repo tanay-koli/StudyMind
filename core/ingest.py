@@ -8,14 +8,17 @@ Async functions to ingest study material from four source types. Each function:
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from core import concepts, retrieval
+from core import concepts, figures, retrieval
 from core.chunking import chunk
-from core.parse import Block, parse_pdf, text_blocks
+from core.parse import Block, extract_figures, parse_pdf, pdf_tables, text_blocks
 from core.topics import GENERAL_TOPIC_ID, add_source, delete_source
+
+log = logging.getLogger("studymind.ingest")
 
 
 # ---------------------------------------------------------------------------
@@ -28,13 +31,13 @@ def _register_in_topic(result: dict) -> None:
     result["source_id"] = src["id"]
 
 
-async def _store(result: dict, blocks: list[Block]) -> None:
+async def _store(result: dict, blocks: list[Block], **index_kw) -> None:
     """Register the source and index its chunks; on failure leave nothing behind."""
     _register_in_topic(result)
     sid = result["source_id"]
     try:
         result["chunk_count"] = await asyncio.to_thread(
-            lambda: retrieval.index_chunks(sid, result["topic_id"], chunk(blocks))
+            lambda: retrieval.index_chunks(sid, result["topic_id"], chunk(blocks), **index_kw)
         )
     except Exception as exc:
         # Roll back so a failed source never half-exists (also purges its chunks)
@@ -47,6 +50,18 @@ async def _store(result: dict, blocks: list[Block]) -> None:
     result["status"] = "success"
     concepts.wake()
     result["excerpt"] = (result["title"] + "\n\n" + "\n\n".join(b.text for b in blocks))[:500]
+
+
+async def _queue_figures(file_path: str, result: dict, blocks: list[Block], tables: dict) -> int:
+    """Crop the PDF's figures for the caption worker; a failure here never fails the ingest."""
+    try:
+        crops = await asyncio.to_thread(extract_figures, file_path, tables)
+        queued = figures.queue(result["source_id"], result["topic_id"], crops, blocks)
+    except Exception:
+        log.warning("figure extraction failed for %s", result["title"], exc_info=True)
+        return 0
+    concepts.wake()  # _store's wake may already have run its pass
+    return queued
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +96,8 @@ async def ingest_pdf(
     }
 
     try:
-        blocks = await asyncio.to_thread(parse_pdf, file_path)
+        tables = await asyncio.to_thread(pdf_tables, file_path)  # shared: find_tables is ~0.3 s a page
+        blocks = await asyncio.to_thread(parse_pdf, file_path, tables)
         if not blocks:
             result["status"] = "error"
             result["error"] = "PDF contains no extractable text."
@@ -89,6 +105,8 @@ async def ingest_pdf(
 
         result["page_count"] = len({b.page for b in blocks})
         await _store(result, blocks)
+        if result["status"] == "success":
+            result["figures_queued"] = await _queue_figures(file_path, result, blocks, tables)
 
     except Exception as exc:
         result["status"] = "error"
@@ -145,17 +163,22 @@ async def ingest_youtube(
         ytt_api = YouTubeTranscriptApi()
         transcript = await asyncio.to_thread(ytt_api.fetch, video_id)
 
-        lines = []
+        # One block per snippet so each chunk keeps the start time of its first snippet
+        blocks = []
         for snippet in transcript:
-            text = snippet.text if hasattr(snippet, "text") else str(snippet.get("text", ""))
-            lines.append(text)
+            if hasattr(snippet, "text"):
+                text, start = snippet.text, getattr(snippet, "start", None)
+            else:  # older API: plain dicts
+                text, start = str(snippet.get("text", "")), snippet.get("start")
+            if text.strip():
+                blocks.append(Block(None, None, text.strip(), start_s=start))
 
-        if not lines:
+        if not blocks:
             result["status"] = "error"
             result["error"] = "No transcript available for this video."
             return result
 
-        await _store(result, text_blocks(" ".join(lines)))
+        await _store(result, blocks, video_url=f"https://youtu.be/{video_id}")
 
     except Exception as exc:
         result["status"] = "error"

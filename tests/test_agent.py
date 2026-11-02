@@ -109,12 +109,12 @@ async def test_zero_hits_skips_rewrite(script):
 
 
 @pytest.mark.asyncio
-async def test_empty_rewrite_falls_back_to_question(script):
+async def test_empty_rewrite_stops_instead_of_repeating_the_search(script):
     s, log, run = script
     s["search"] = [[_doc(-6.0)], [_doc(2.0)]]
-    s["complete"] = ["   ", "A [1]."]
-    await run("vague")
-    assert log["queries"] == ["vague", "vague"]
+    s["complete"] = ["   "]
+    nodes, st = await run("vague")
+    assert log["queries"] == ["vague"] and "not_found" in nodes
 
 
 @pytest.mark.asyncio
@@ -206,3 +206,32 @@ async def test_rewrite_prompt_names_the_topic(script):
     s["complete"] = ["attention cost", "A [1]."]
     await run("why is it slow for long inputs", topic_id=tid)
     assert "Deep Learning" in log["prompts"][0][0]
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_leaves_no_orphan_question(script, monkeypatch):
+    s, log, run = script
+
+    async def boom(q, topic_id):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(agent, "search_material", boom)
+    with pytest.raises(RuntimeError):
+        await run("first question")
+    monkeypatch.setattr(agent, "search_material", lambda q, t: _async([]))
+    _, st = await run("quiz me")
+    assert [m["content"] for m in st["messages"]] == ["quiz me", agent.DEFERRED]
+
+
+async def _async(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_rewrite_that_repeats_a_tried_query_stops_searching(script):
+    s, log, run = script
+    s["search"] = [[_doc(-6.0)]] * 3
+    s["complete"] = ["vague", "vague"]
+    nodes, st = await run("vague")
+    assert log["queries"] == ["vague"] and nodes.count("rewrite_query") == 1
+    assert st["answer"] == "This isn't in your material. Searched for: 'vague'"

@@ -71,6 +71,7 @@ data/*.mp4
 # ─── Runtime data (SQLite DB, uploads, generated audio) ──────────────────────
 data/studymind.db
 data/agent.db*
+data/figures/
 data/uploads/
 data/audio/
 data/models/

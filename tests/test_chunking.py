@@ -47,3 +47,16 @@ def test_structure_never_crosses_pages():
     # A chunk cites one page, so a section spanning pages splits at the page break
     out = structure([Block(1, "A", "end of page one"), Block(2, "A", "start of page two")])
     assert [(c.page, c.text) for c in out] == [(1, "end of page one"), (2, "start of page two")]
+
+
+def test_structure_never_merges_table_into_prose():
+    out = structure([Block(1, "A", "a1"), Block(1, "A", "| x |", kind="table"), Block(1, "A", "a2")])
+    assert [(c.kind, c.text) for c in out] == [("text", "a1"), ("table", "| x |"), ("text", "a2")]
+
+
+def test_chunks_keep_first_start_s():
+    out = structure([Block(None, None, "a", start_s=0.0), Block(None, None, "b", start_s=4.5),
+                     Block(None, None, "c", start_s=9.0)])
+    assert [(c.text, c.start_s) for c in out] == [("a\n\nb\n\nc", 0.0)]
+    win = fixed([Block(None, None, words(500), start_s=3.0), Block(None, None, words(500, 500), start_s=60.0)])
+    assert [c.start_s for c in win] == [3.0, 3.0, 60.0]

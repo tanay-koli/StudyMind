@@ -16,8 +16,9 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core import agent, concepts, ingest, query, retrieval, topics
-from core.config import DATA_DIR, check_llm, http_client, set_http_client
+from core import agent, concepts, config, ingest, query, retrieval, topics
+from core.db import ChunkMedia, session
+from core.config import DATA_DIR, check_llm, http_client, set_http_client, settings
 from core.llm import setup_tracing
 
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -106,7 +107,7 @@ def _require_topic(topic_id: Optional[str]) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"llm": await check_llm()}
+    return {"llm": await check_llm(), "vision": await check_llm(settings.vision_model)}
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,21 @@ async def ingest_url(body: UrlIn):
 async def ingest_text(body: TextIn):
     _require_topic(body.topic_id)
     return await ingest.ingest_text(body.text, title=body.title, topic_id=body.topic_id)
+
+
+# ---------------------------------------------------------------------------
+# Figures
+# ---------------------------------------------------------------------------
+
+@app.get("/figures/{chunk_id}")
+def figure(chunk_id: int):
+    # The path comes from the database row only, never from the request
+    with session() as s:
+        media = s.get(ChunkMedia, chunk_id)
+    path = config.FIGURE_DIR / media.image_path if media and media.image_path else None  # stored relative
+    if media is None or media.kind != "figure" or path is None or not path.is_file():
+        raise HTTPException(404, "Figure not found")
+    return FileResponse(path, media_type="image/png")
 
 
 # ---------------------------------------------------------------------------

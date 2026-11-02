@@ -50,14 +50,37 @@ def suggest(excerpt: str) -> str:
     return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
 
-def _render_citations(citations: list[dict]) -> None:
-    """One chip per cited chunk, numbered like the [n] markers; click to read the chunk."""
+def _clock(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def _render_citations(citations: list[dict], answer: str = "") -> None:
+    """One chip per cited chunk, numbered like the [n] markers; click to read the chunk.
+
+    Figures the answer cites as [n] are also shown below it (at most 2).
+    """
     if not citations:
         return
     for col, (n, c) in zip(st.columns(len(citations)), enumerate(citations, start=1)):
-        label = f"[{n}] 📄 {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else "")
+        kind = c.get("kind", "text")
+        page = f" · p.{c['page']}" if c.get("page") else ""
+        if kind == "figure":
+            label = f"[{n}] 🖼️ {c['source_title']}{page}"
+        elif kind == "video" and c.get("start_s") is not None:
+            label = f"[{n}] 🎬 {c['source_title']} @ {_clock(c['start_s'])}"
+        else:
+            label = f"[{n}] 📄 {c['source_title']}{page}"
         with col, st.popover(label, width="stretch"):
+            if c.get("image_url"):
+                st.image(settings.api_url + c["image_url"])
             st.markdown(c["text"])
+            if c.get("url"):
+                st.link_button(f"Open at {_clock(c['start_s'])}" if c.get("start_s") is not None else "Open",
+                               c["url"])
+    cited = [(n, c) for n, c in enumerate(citations, start=1) if c.get("image_url") and f"[{n}]" in answer][:2]
+    for n, c in cited:
+        st.image(settings.api_url + c["image_url"], caption=f"[{n}] {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +280,7 @@ with st.sidebar:
     # LLM status
     for label, status in (
         (f"LLM ({settings.llm_model})", st.session_state.health["llm"]),
+        (f"Vision ({settings.vision_model})", st.session_state.health["vision"]),
     ):
         st.markdown(f"**{label}:** {get_cloud_status_emoji(status)}")
         if not status["ok"] and status.get("error"):
@@ -563,6 +587,13 @@ with tab_ingest:
                         f"({result.get('page_count', '?')} pages)",
                         icon="📄",
                     )
+                    if result.get("figures_queued"):
+                        if st.session_state.health["vision"]["ok"]:
+                            st.info(f"🖼️ {result['figures_queued']} figures queued for captioning — "
+                                    "searchable in a few minutes.")
+                        else:
+                            st.warning(f"🖼️ {result['figures_queued']} figures are waiting for the vision model: "
+                                       f"{st.session_state.health['vision']['error']}")
                     # Trigger AI topic suggestion
                     sug = suggest(result["excerpt"])
                     if sug:
@@ -710,7 +741,7 @@ with tab_agent:
         st.markdown(msg["content"])
         if msg.get("warning"):
             st.warning(msg["warning"])
-        _render_citations(msg.get("citations") or [])
+        _render_citations(msg.get("citations") or [], msg["content"])
         if msg.get("graph"):
             st.components.v1.html(msg["graph"], height=500, scrolling=False)
 
@@ -818,7 +849,7 @@ with tab_ask:
                 else:
                     st.markdown(msg["content"])
 
-                _render_citations(msg.get("citations", []))
+                _render_citations(msg.get("citations", []), msg.get("content", ""))
                 if msg.get("sources") and not msg.get("citations"):
                     with st.expander("📎 Sources"):
                         for src in msg["sources"]:
@@ -870,7 +901,7 @@ with tab_ask:
                     else:
                         st.markdown(answer_text)
 
-                    _render_citations(result.get("citations", []))
+                    _render_citations(result.get("citations", []), answer_text)
                     if result.get("sources") and not result.get("citations"):
                         with st.expander("📎 Sources"):
                             for src in result["sources"]:
@@ -908,7 +939,7 @@ with tab_ask:
                     st.error(result["error"])
                 else:
                     st.markdown(result.get("summary", "No summary generated."))
-                    _render_citations(result.get("citations", []))
+                    _render_citations(result.get("citations", []), result.get("summary", ""))
 
 
 # ========================== TAB 3: CONNECT TOPICS ==========================

@@ -17,7 +17,7 @@ from qdrant_client import QdrantClient, models
 from sqlmodel import func, select
 
 from core.config import DATA_DIR, settings
-from core.db import Chunk, Source, session
+from core.db import Chunk, ChunkMedia, Source, session
 from core.parse import Block
 
 # name -> (fastembed model, dim, query prefix, document prefix)
@@ -179,8 +179,20 @@ def _upsert(chunks: list[Chunk]) -> None:
             store().upsert(name, points)
 
 
-def index_chunks(source_id: int, topic_id: str, blocks: list[Block]) -> int:
-    """Write Chunk rows, then their Qdrant points. Returns the chunk count."""
+def _media(chunk_id: int, b: Block, video_url: Optional[str], figure: Optional[dict]) -> Optional[ChunkMedia]:
+    if figure:
+        return ChunkMedia(chunk_id=chunk_id, kind="figure", image_path=figure["image_path"], bbox=figure["bbox"])
+    if b.kind == "table":
+        return ChunkMedia(chunk_id=chunk_id, kind="table")
+    if b.start_s is not None:
+        url = f"{video_url}?t={int(b.start_s)}" if video_url else None
+        return ChunkMedia(chunk_id=chunk_id, kind="video", start_s=b.start_s, url=url)
+    return None
+
+
+def index_chunks(source_id: int, topic_id: str, blocks: list[Block],
+                 video_url: Optional[str] = None, figure: Optional[dict] = None) -> int:
+    """Write Chunk rows (and ChunkMedia for figures, tables, video), then their Qdrant points. Returns the count."""
     rows = [
         Chunk(source_id=source_id, topic_id=topic_id, chunker=settings.chunker, ord=i,
               page=b.page, section_heading=b.section_heading, text=b.text)
@@ -193,6 +205,10 @@ def index_chunks(source_id: int, topic_id: str, blocks: list[Block]) -> int:
         s.commit()
         for r in rows:
             s.refresh(r)
+        media = [m for r, b in zip(rows, blocks) if (m := _media(r.id, b, video_url, figure))]
+        if media:
+            s.add_all(media)
+            s.commit()
     _upsert(rows)
     return len(rows)
 
@@ -254,6 +270,7 @@ class Hit:
     section: Optional[str]
     text: str
     score: float
+    media: Optional[dict] = None  # {kind, image_path, start_s, url} for figures, tables, video
 
 
 class Retriever(Protocol):
@@ -292,8 +309,16 @@ def _hydrate(ids: list[int]) -> list[tuple[Chunk, str]]:
         ).all()
 
 
-def _hit(c: Chunk, title: str, score: float) -> Hit:
-    return Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score))
+def _media_for(ids: list[int]) -> dict[int, dict]:
+    if not ids:
+        return {}
+    with session() as s:
+        rows = s.exec(select(ChunkMedia).where(ChunkMedia.chunk_id.in_(ids))).all()
+    return {m.chunk_id: {"kind": m.kind, "image_path": m.image_path, "start_s": m.start_s, "url": m.url} for m in rows}
+
+
+def _hit(c: Chunk, title: str, score: float, media: dict[int, dict]) -> Hit:
+    return Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score), media.get(c.id))
 
 
 class HybridRetriever:
@@ -327,7 +352,8 @@ class HybridRetriever:
             return []
         scores = rerank(rerank_query or query, [_search_text(c) for c, _ in rows])
         ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
-        return [_hit(c, title, score) for (c, title), score in ranked]
+        media = _media_for([c.id for (c, _), _ in ranked])
+        return [_hit(c, title, score, media) for (c, title), score in ranked]
 
 
 class DenseRetriever:
@@ -351,7 +377,8 @@ class DenseRetriever:
         scores = {p.id: p.score for p in points}
         rows = _hydrate(list(scores)) if scores else []
         rows.sort(key=lambda r: scores[r[0].id], reverse=True)
-        return [_hit(c, title, scores[c.id]) for c, title in rows]
+        media = _media_for([c.id for c, _ in rows])
+        return [_hit(c, title, scores[c.id], media) for c, title in rows]
 
 
 def base_retriever() -> Retriever:

@@ -43,7 +43,8 @@ def fixed(blocks: list[Block], size: int = CHUNK_TOKENS, overlap: int = CHUNK_OV
         window = spans[i:i + size]
         start = window[0][0]
         origin = next(b for pos, b in reversed(starts) if pos <= start)
-        chunks.append(Block(origin.page, origin.section_heading, text[start:window[-1][1]]))
+        chunks.append(Block(origin.page, origin.section_heading, text[start:window[-1][1]],
+                            origin.kind, origin.start_s))
         if i + size >= len(spans):
             break
     return chunks
@@ -60,6 +61,7 @@ def structure(blocks: list[Block], max_tokens: int = CHUNK_TOKENS) -> list[Block
             continue
         fits = (
             current
+            and current.kind == b.kind == "text"  # a table stays its own chunk
             and (current.page, current.section_heading) == (b.page, b.section_heading)
             and current_tokens + n <= max_tokens
         )
@@ -73,7 +75,7 @@ def structure(blocks: list[Block], max_tokens: int = CHUNK_TOKENS) -> list[Block
         if n > max_tokens:
             chunks.extend(fixed([b], max_tokens, CHUNK_OVERLAP))
         else:
-            current, current_tokens = Block(b.page, b.section_heading, b.text), n
+            current, current_tokens = Block(b.page, b.section_heading, b.text, b.kind, b.start_s), n
     if current:
         chunks.append(current)
     return chunks

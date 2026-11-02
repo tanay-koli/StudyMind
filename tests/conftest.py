@@ -76,6 +76,7 @@ def offline(tmp_path, monkeypatch):
     monkeypatch.setattr(retrieval, "embed_sparse", fake_embed_sparse)
     monkeypatch.setattr(retrieval, "rerank", fake_rerank)
     monkeypatch.setattr(topics, "AUDIO_DIR", tmp_path)
+    monkeypatch.setattr(config, "FIGURE_DIR", tmp_path / "figures")
 
     async def fake_complete(prompt, system=None, **kwargs):
         return "Transformer Models"
