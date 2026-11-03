@@ -305,6 +305,11 @@ def select_attempts():
     return select(QuizAttempt)
 
 
+def test_feedback_has_no_double_period():
+    q = _q("enzyme", 1, "mcq").model_copy(update={"options": ["w", "It blocks the active site.", "y", "z"]})
+    assert agent._feedback(q, "wrong", "From the passage.") ==         "❌ Not quite — the answer is B) It blocks the active site. From the passage."
+
+
 @pytest.mark.asyncio
 async def test_stop_ends_quiz(quiz):
     f, run = quiz

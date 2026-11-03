@@ -262,7 +262,7 @@ def _feedback(q: tutor.Question, verdict: Optional[str], feedback: str) -> str:
         return f"🟡 Partly right. {feedback}".strip()
     if verdict == "wrong":
         right = f"{q.answer}) {q.options['ABCD'.index(q.answer)]}" if q.kind == "mcq" else q.answer
-        return f"❌ Not quite — the answer is {right}. {feedback}".strip()
+        return f"❌ Not quite — the answer is {right.rstrip('.')}. {feedback}".strip()
     return "⚠️ Couldn't grade this answer."
 
 
