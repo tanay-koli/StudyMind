@@ -114,3 +114,102 @@ async def test_review_empty_when_nothing_due():
     tid, _ = plant(["a"], {0: [("Alpha", "r", "x0")]})
     _mastery("alpha", "correct", 2.6, TODAY + timedelta(6))
     assert await tutor.pick_targets(tid, review=True, today=TODAY) == []
+
+
+# ---------------------------------------------------------------------------
+# Questions and grading
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def llm_script(monkeypatch):
+    """Scripted llm.complete / complete_json replies (an Exception is raised); records (prompt, system)."""
+    from core.llm import llm
+
+    s = {"text": [], "json": [], "calls": []}
+
+    async def complete(prompt, system=None, **kw):
+        s["calls"].append((prompt, system))
+        return s["text"].pop(0)
+
+    async def complete_json(prompt, system=None, **kw):
+        s["calls"].append((prompt, system))
+        reply = s["json"].pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(llm, "complete", complete)
+    monkeypatch.setattr(llm, "complete_json", complete_json)
+    return s
+
+
+MCQ = {"question": "What do enzymes lower?", "options": ["Activation energy", "Temperature", "pH", "Mass"],
+       "answer": "A", "difficulty": "easy"}
+
+
+@pytest.mark.asyncio
+async def test_generate_valid_mcq_and_short(llm_script):
+    from tests.planting import plant
+
+    _, ids = plant(["Enzymes lower activation energy."], {0: [("Enzyme", "lowers", "Activation energy")]})
+    llm_script["json"] = [dict(MCQ, options=["A) Activation energy", "B) Temperature", "C) pH", "D) Mass"]),
+                          {"question": "Why are enzymes useful?", "answer": "They lower activation energy.",
+                           "difficulty": "medium"}]
+    q = await tutor.generate_question("enzyme", ids[0], "mcq", facts="About the student:\n- likes short answers")
+    assert (q.kind, q.options[0], q.answer, q.concept, q.chunk_id) == ("mcq", "Activation energy", "A", "enzyme", ids[0])
+    assert q.citation["chunk_id"] == ids[0] and "lower activation energy" in q.citation["text"]
+    assert "likes short answers" in llm_script["calls"][0][1]
+    short = await tutor.generate_question("enzyme", ids[0], "short")
+    assert short.kind == "short" and short.options == [] and short.difficulty == "medium"
+
+
+@pytest.mark.asyncio
+async def test_generate_rejects_bad_mcq_twice(llm_script):
+    from tests.planting import plant
+
+    _, ids = plant(["Enzymes lower activation energy."], {0: [("Enzyme", "lowers", "Activation energy")]})
+    llm_script["json"] = [dict(MCQ, options=["x", "y", "z"]), ValueError("no json")]
+    assert await tutor.generate_question("enzyme", ids[0], "mcq") is None and len(llm_script["calls"]) == 2
+
+
+@pytest.mark.parametrize("answer,letter", [
+    ("b", "B"), ("(B)", "B"), ("B.", "B"), ("I think it's B because a cell divides", "B"),
+    ("pH", "C"), ("  temperature ", "B"), ("no idea", None),
+])
+def test_mcq_letter_forms(answer, letter):
+    assert tutor._mcq_letter(answer, MCQ["options"]) == letter
+
+
+@pytest.mark.asyncio
+async def test_grade_mcq_correct_makes_no_call(llm_script):
+    q = _question(kind="mcq", options=MCQ["options"], answer="A")
+    assert await tutor.grade(q, "a") == ("correct", "") and llm_script["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_grade_mcq_wrong_explains_once(llm_script):
+    llm_script["text"] = ["  Enzymes lower activation energy, as the passage says.  "]
+    q = _question(kind="mcq", options=MCQ["options"], answer="A")
+    assert await tutor.grade(q, "C") == ("wrong", "Enzymes lower activation energy, as the passage says.")
+    assert len(llm_script["calls"]) == 1 and "Activation energy" in llm_script["calls"][0][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["correct", "partial", "wrong"])
+async def test_grade_short_verdicts(llm_script, verdict):
+    llm_script["json"] = [{"verdict": verdict, "feedback": "One line."}]
+    assert await tutor.grade(_question(), "they help") == (verdict, "One line.")
+
+
+@pytest.mark.asyncio
+async def test_grade_short_invalid_twice_is_ungraded(llm_script):
+    llm_script["json"] = [{"verdict": "maybe"}, ValueError("no json")]
+    assert await tutor.grade(_question(), "they help") == (None, "Couldn't grade this answer.")
+
+
+@pytest.mark.asyncio
+async def test_grade_uses_stored_citation_text(llm_script):
+    # The chunk is gone (source deleted mid-quiz); grading reads the question's own citation
+    llm_script["json"] = [{"verdict": "correct", "feedback": "Yes."}]
+    await tutor.grade(_question(chunk_id=999), "lower activation energy")
+    assert "Enzymes lower activation energy." in llm_script["calls"][0][0]
