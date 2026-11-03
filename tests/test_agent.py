@@ -1,5 +1,7 @@
 """StudyMind — the LangGraph agent: routing, corrective retrieval, self-check, persistence (offline)."""
 
+import re
+
 import pytest
 
 from core import agent, topics
@@ -73,7 +75,7 @@ async def test_strong_retrieval_answers_without_rewrite(script):
     s["search"] = [[_doc(2.0)]]
     s["complete"] = ["Attention weighs tokens [1]."]
     nodes, st = await run("what does attention do")
-    assert nodes == ["route_intent", "retrieve", "grade_documents", "generate", "self_check", "respond"]
+    assert nodes == ["route_intent", "retrieve", "grade_documents", "generate", "self_check", "respond", "remember"]
     assert st["answer"] == "Attention weighs tokens [1]." and st["warning"] is None
     assert st["citations"][0]["chunk_id"] == 1
     assert st["messages"][-1] == {"role": "assistant", "content": "Attention weighs tokens [1]."}
@@ -172,15 +174,13 @@ async def test_explain_uses_explain_prompt(script):
 
 
 @pytest.mark.asyncio
-async def test_deferred_and_connect_make_no_llm_call(script, monkeypatch):
+async def test_connect_makes_no_llm_call(script, monkeypatch):
     s, log, run = script
 
     async def fake_connect(a, b):
         return {"summary": f"{a}~{b}", "html_graph": "<g/>"}
 
     monkeypatch.setattr(agent.query, "connect_topics", fake_connect)
-    _, st = await run("quiz me", thread="q")
-    assert st["answer"] == "Quizzes and reviews are coming in Phase 5."
     _, st = await run("connect enzymes with catalysts", thread="c")
     assert st["answer"] == "enzymes~catalysts" and st["graph"] == "<g/>" and log["prompts"] == []
 
@@ -218,9 +218,9 @@ async def test_failed_turn_leaves_no_orphan_question(script, monkeypatch):
     monkeypatch.setattr(agent, "search_material", boom)
     with pytest.raises(RuntimeError):
         await run("first question")
-    monkeypatch.setattr(agent, "search_material", lambda q, t: _async([]))
-    _, st = await run("quiz me")
-    assert [m["content"] for m in st["messages"]] == ["quiz me", agent.DEFERRED]
+    monkeypatch.setattr(agent.query, "connect_topics", lambda a, b: _async({"summary": f"{a}~{b}"}))
+    _, st = await run("connect enzymes with catalysts")
+    assert [m["content"] for m in st["messages"]] == ["connect enzymes with catalysts", "enzymes~catalysts"]
 
 
 async def _async(value):
@@ -235,3 +235,170 @@ async def test_rewrite_that_repeats_a_tried_query_stops_searching(script):
     nodes, st = await run("vague")
     assert log["queries"] == ["vague"] and nodes.count("rewrite_query") == 1
     assert st["answer"] == "This isn't in your material. Searched for: 'vague'"
+
+
+# ---------------------------------------------------------------------------
+# Quiz and review sessions
+# ---------------------------------------------------------------------------
+
+from core import memory, tutor  # noqa: E402
+from core.db import LearnerFact, QuizAttempt, session  # noqa: E402
+
+
+def _q(concept, chunk_id, kind):
+    mcq = kind == "mcq"
+    return tutor.Question(kind=kind, question=f"Q about {concept}?", options=["w", "x", "y", "z"] if mcq else [],
+                          answer="B" if mcq else "ans", difficulty="easy", concept=concept, chunk_id=chunk_id,
+                          citation={"source_title": "Notes", "page": 1, "chunk_id": chunk_id, "text": f"{concept} text",
+                                    "kind": "text", "image_url": None, "url": None, "start_s": None, "score": 0.0})
+
+
+@pytest.fixture
+def quiz(script, monkeypatch):
+    """Fake tutor targets, questions and verdicts; the real tutor.record writes attempts."""
+    s, log, run = script
+    f = {"targets": [(f"c{i}", i) for i in range(1, 6)], "verdicts": [], "picks": []}
+
+    async def pick(topic_id, about=None, review=False, n=5, today=None):
+        f["picks"].append({"topic_id": topic_id, "about": about, "review": review})
+        return list(f["targets"])
+
+    async def generate(concept, chunk_id, kind, facts=""):
+        return _q(concept, chunk_id, kind)
+
+    async def grade(question, answer, facts=""):
+        v = f["verdicts"].pop(0)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    monkeypatch.setattr(tutor, "pick_targets", pick)
+    monkeypatch.setattr(tutor, "generate_question", generate)
+    monkeypatch.setattr(tutor, "grade", grade)
+    return f, run
+
+
+@pytest.mark.asyncio
+async def test_quiz_session_runs_to_summary(quiz):
+    f, run = quiz
+    _, st = await run("quiz me on enzymes")
+    assert f["picks"] == [{"topic_id": None, "about": "enzymes", "review": False}]
+    assert st["answer"].startswith("Question 1/5 · c1 · easy\n\nQ about c1?")
+    assert "A) w\nB) x\nC) y\nD) z" in st["answer"] and st["answer"].endswith("Reply with a letter.")
+    assert st["citations"][0]["chunk_id"] == 1
+    f["verdicts"] = [("correct", ""), ("correct", "Good."), ("wrong", "Because."), ("correct", ""), ("correct", "")]
+    _, st = await run("B")
+    assert st["answer"].startswith("✅ Correct.") and "Question 2/5 · c2" in st["answer"]
+    assert st["answer"].endswith("Answer in a sentence or two.")
+    await run("ans")
+    _, st = await run("A")
+    assert st["answer"].startswith("❌ Not quite — the answer is B) x. Because.")
+    await run("ans")
+    _, st = await run("B")
+    assert "Session done: 4/5 correct. To review: c3 (tomorrow)" in st["answer"] and st["quiz"] is None
+    with session() as s:
+        assert len(s.exec(select_attempts()).all()) == 5
+
+
+def select_attempts():
+    from sqlmodel import select
+    return select(QuizAttempt)
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_quiz(quiz):
+    f, run = quiz
+    await run("quiz me")
+    _, st = await run("stop")
+    assert st["answer"] == "Quiz stopped after 0 questions." and st["quiz"] is None
+
+
+@pytest.mark.asyncio
+async def test_new_quiz_replaces_active_one(quiz):
+    f, run = quiz
+    await run("quiz me on enzymes")
+    f["targets"] = [("weak", 9)]
+    _, st = await run("review")
+    assert f["picks"][-1]["review"] is True and st["quiz"]["mode"] == "review"
+    assert st["answer"].startswith("Question 1/1 · weak")
+
+
+@pytest.mark.asyncio
+async def test_failed_answer_turn_keeps_quiz(quiz):
+    f, run = quiz
+    await run("quiz me")
+    f["verdicts"] = [RuntimeError("ollama down"), ("correct", "")]
+    with pytest.raises(RuntimeError):
+        await run("B")
+    _, st = await run("B")
+    assert st["answer"].startswith("✅ Correct.") and "Question 2/5 · c2" in st["answer"]
+
+
+@pytest.mark.asyncio
+async def test_review_with_nothing_due_says_so(quiz):
+    f, run = quiz
+    f["targets"] = []
+    _, st = await run("review")
+    assert st["answer"] == agent.REVIEW_EMPTY and st["quiz"] is None
+
+
+@pytest.mark.asyncio
+async def test_remember_skips_quiz_turns_and_feeds_generate(quiz, script, monkeypatch):
+    f, run = quiz
+    s, log, _ = script
+    calls = []
+
+    async def fake_update(message):
+        calls.append(message)
+        return 0
+
+    monkeypatch.setattr(memory, "update", fake_update)
+    await run("quiz me")                       # quiz start: not remembered
+    f["verdicts"] = [("correct", "")]
+    await run("my answer is B")                # quiz answer: not remembered
+    assert calls == []
+    await run("stop")
+    s["search"] = [[_doc(2.0)]]
+    s["complete"] = ["Noted [1]."]
+    await run("My exam is on 12 Dec")          # normal chat: remembered
+    assert calls == ["My exam is on 12 Dec"]
+    with session() as db:
+        db.add(LearnerFact(fact="Prefers short examples"))
+        db.commit()
+    s["search"] = [[_doc(2.0)]]
+    s["complete"] = ["Short [1]."]
+    await run("what does attention do")
+    assert "Prefers short examples" in log["prompts"][-1][1]
+
+
+@pytest.mark.asyncio
+async def test_done_when_review_targets_planted_mistakes(script, monkeypatch):
+    """Planted: alpha wrong, beta partly right, gamma–epsilon right. The next review asks exactly [alpha, beta]."""
+    from tests.planting import plant
+
+    s, log, run = script
+    names = ["alpha", "beta", "gamma", "delta", "epsilon"]
+    tid, _ = plant([f"{n} is a key idea in this course" for n in names], {i: [(n, "is", n)] for i, n in enumerate(names)})
+
+    async def complete_json(prompt, system=None, **kw):
+        concept = next(n for n in names if f"'{n}'" in prompt or f"Q about {n}" in prompt)
+        if "Grade the student's answer" in prompt:
+            return {"verdict": "partial" if concept == "beta" else "correct", "feedback": "From the passage."}
+        if "multiple-choice" in prompt:
+            return {"question": f"Q about {concept}?", "options": ["w", "x", "y", "z"], "answer": "A", "difficulty": "easy"}
+        return {"question": f"Q about {concept}?", "answer": "ans", "difficulty": "easy"}
+
+    async def complete(prompt, system=None, **kw):
+        return "Because the passage says so."
+
+    monkeypatch.setattr(llm, "complete_json", complete_json)
+    monkeypatch.setattr(llm, "complete", complete)
+    _, st = await run("quiz me", topic_id=tid)
+    for _ in range(5):
+        concept = re.search(r"Question \d/5 · (\w+)", st["answer"]).group(1)
+        reply = "D" if concept == "alpha" else ("A" if st["quiz"]["current"]["kind"] == "mcq" else "an answer")
+        _, st = await run(reply, topic_id=tid)
+    assert "Session done: 3/5 correct." in st["answer"]
+    _, st = await run("review", topic_id=tid)
+    assert [c for c, _ in st["quiz"]["targets"]] == ["alpha", "beta"]
+    assert st["answer"].startswith("Question 1/2 · alpha")

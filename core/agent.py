@@ -4,11 +4,13 @@ StudyMind — Agent
 One LangGraph state machine decides what to do with a chat message: route by
 rules (qa / explain / connect / quiz / review), retrieve, grade the passages by
 reranker score, rewrite and retry when they are weak, answer with citations,
-then check the answer against the cited passages.
+then check the answer against the cited passages. Quiz and review sessions run
+one question per turn and survive between turns in the checkpointed state.
 """
 
 import dataclasses
 import logging
+from datetime import date, timedelta
 import operator
 import re
 from contextlib import asynccontextmanager
@@ -17,7 +19,8 @@ from typing import Annotated, Optional, TypedDict
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from core import query
+from core import memory, query, tutor
+from core.db import ConceptMastery, session
 from core.config import settings
 from core.llm import llm
 from core.retrieval import Hit, get_retriever, relevant
@@ -26,7 +29,9 @@ log = logging.getLogger("studymind.agent")
 
 MAX_RETRIES = 2
 NOT_FOUND = "This isn't in your material."
-DEFERRED = "Quizzes and reviews are coming in Phase 5."
+REVIEW_EMPTY = "Nothing to review yet — answer some quiz questions first, or try 'quiz me on <topic>'."
+QUIZ_EMPTY = "I couldn't find quizzable material for that yet."
+NO_QUESTIONS = "I couldn't write questions from this material."
 WARNING = "Some statements may not be supported by your material:"
 EXPLAIN_SYSTEM = (
     query.CITE_RULES
@@ -55,6 +60,9 @@ class StudyState(TypedDict, total=False):
     regenerated: bool
     unsupported: list[str]
     warning: Optional[str]
+    # Survives between turns (route_intent does not reset it): {mode, topic_id, targets: [[concept, chunk_id]],
+    # index, current: Question dict, results: [[concept, verdict]]}
+    quiz: Optional[dict]
 
 
 LABELS = {
@@ -66,7 +74,10 @@ LABELS = {
     "self_check": "verifying",
     "not_found": "nothing found",
     "connect": "connecting topics",
-    "deferred": "not yet available",
+    "quiz_start": "making a question",
+    "quiz_answer": "grading",
+    "quiz_stop": "stopping quiz",
+    "remember": "remembering",
     "respond": "done",
 }
 
@@ -80,6 +91,13 @@ _CONNECT = (
     re.compile(r"\bconnect (.+?) (?:with|and|to) (.+)", re.I),
 )
 _EXPLAIN = re.compile(r"^\s*(explain|why|how does|how do|what is|what are)\b", re.I)
+QUIZ_STOP = re.compile(r"^\s*(stop|end( the)? quiz|quit)\b", re.I)
+
+
+def _quiz_about(message: str) -> Optional[str]:
+    """'quiz me on enzymes' → 'enzymes'."""
+    m = re.search(r"\b(?:on|about)\s+(.+)", message, re.I)
+    return (m.group(1).strip(" ?.!\t") or None) if m else None
 
 
 def classify(message: str, topics: Optional[list[str]], hint: Optional[str]) -> tuple[str, list[str]]:
@@ -119,7 +137,12 @@ async def search_material(query_text: str, topic_id: Optional[str]) -> list[dict
 
 async def route_intent(state: StudyState) -> dict:
     question = state["question"]
-    intent, topics = classify(question, state.get("topics"), state.get("intent_hint"))
+    if state.get("quiz") and QUIZ_STOP.match(question):
+        intent, topics = "quiz_stop", []
+    elif state.get("quiz") and not (_QUIZ.search(question) or _REVIEW.search(question)):
+        intent, topics = "quiz_answer", []  # a new quiz/review command replaces the session instead
+    else:
+        intent, topics = classify(question, state.get("topics"), state.get("intent_hint"))
     return {
         "intent": intent, "topics": topics, "query": question,
         # per-turn fields start fresh; messages carry the conversation (respond saves this turn)
@@ -162,6 +185,8 @@ async def generate(state: StudyState) -> dict:
         prompt += ("\n\nThese sentences were not supported by the passages; drop or fix them:\n"
                    + "\n".join(f"- {u}" for u in state["unsupported"]))
     system = EXPLAIN_SYSTEM if state["intent"] == "explain" else query.ANSWER_SYSTEM
+    if profile := memory.profile():
+        system += "\n" + profile
     answer = await llm.complete(prompt, system=system)
     # Called with flagged sentences means this is the one regeneration
     return {"answer": answer, "citations": citations, "regenerated": bool(state["unsupported"])}
@@ -196,8 +221,81 @@ async def connect(state: StudyState) -> dict:
     return {"answer": res["summary"], "graph": res.get("html_graph")}
 
 
-async def deferred(state: StudyState) -> dict:
-    return {"answer": DEFERRED}
+def _format_question(q: tutor.Question, i: int, total: int) -> str:
+    text = f"Question {i}/{total} · {q.concept} · {q.difficulty}\n\n{q.question}"
+    if q.kind == "mcq":
+        options = "\n".join(f"{letter}) {option}" for letter, option in zip("ABCD", q.options))
+        return f"{text}\n\n{options}\n\nReply with a letter."
+    return f"{text}\n\nAnswer in a sentence or two."
+
+
+async def _next_question(targets: list, index: int, facts: str) -> tuple[Optional[tutor.Question], list]:
+    """The question for targets[index]; targets that fail to produce one are dropped."""
+    targets = list(targets)
+    while index < len(targets):
+        concept, chunk_id = targets[index]
+        q = await tutor.generate_question(concept, chunk_id, "mcq" if index % 2 == 0 else "short", facts)
+        if q is not None:
+            return q, targets
+        targets.pop(index)
+    return None, targets
+
+
+async def quiz_start(state: StudyState) -> dict:
+    review = state["intent"] == "review"
+    about = None if review else _quiz_about(state["question"])
+    targets = await tutor.pick_targets(state.get("topic_id"), about=about, review=review)
+    if not targets:
+        return {"answer": REVIEW_EMPTY if review else QUIZ_EMPTY, "quiz": None}
+    q, targets = await _next_question([list(t) for t in targets], 0, memory.profile())
+    if q is None:
+        return {"answer": NO_QUESTIONS, "quiz": None}
+    quiz = {"mode": "review" if review else "quiz", "topic_id": state.get("topic_id"), "targets": targets,
+            "index": 0, "current": q.model_dump(), "results": []}
+    return {"answer": _format_question(q, 1, len(targets)), "citations": [q.citation], "quiz": quiz}
+
+
+def _feedback(q: tutor.Question, verdict: Optional[str], feedback: str) -> str:
+    if verdict == "correct":
+        return "✅ Correct."
+    if verdict == "partial":
+        return f"🟡 Partly right. {feedback}".strip()
+    if verdict == "wrong":
+        right = f"{q.answer}) {q.options['ABCD'.index(q.answer)]}" if q.kind == "mcq" else q.answer
+        return f"❌ Not quite — the answer is {right}. {feedback}".strip()
+    return "⚠️ Couldn't grade this answer."
+
+
+def _summary(results: list) -> str:
+    correct = sum(v == "correct" for _, v in results)
+    weak = [c for c, v in results if v in ("wrong", "partial")]
+    text = f"Session done: {correct}/{len(results)} correct."
+    if weak:
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        with session() as s:
+            due = {c: getattr(s.get(ConceptMastery, c), "next_review", tomorrow) for c in weak}
+        text += " To review: " + ", ".join(f"{c} ({'tomorrow' if due[c] == tomorrow else due[c]})" for c in weak)
+    return text
+
+
+async def quiz_answer(state: StudyState) -> dict:
+    quiz = state["quiz"]
+    q = tutor.Question(**quiz["current"])
+    facts = memory.profile()
+    verdict, feedback = await tutor.grade(q, state["question"], facts)
+    tutor.record(q, state["question"], verdict, feedback, quiz["topic_id"])
+    results = quiz["results"] + [[q.concept, verdict]]
+    line = _feedback(q, verdict, feedback)
+    nq, targets = await _next_question(quiz["targets"], quiz["index"] + 1, facts)
+    if nq is None:
+        return {"answer": f"{line}\n\n{_summary(results)}", "citations": [q.citation], "quiz": None}
+    nxt = dict(quiz, targets=targets, index=quiz["index"] + 1, current=nq.model_dump(), results=results)
+    return {"answer": f"{line}\n\n{_format_question(nq, nxt['index'] + 1, len(targets))}",
+            "citations": [q.citation, nq.citation], "quiz": nxt}
+
+
+async def quiz_stop(state: StudyState) -> dict:
+    return {"answer": f"Quiz stopped after {len(state['quiz']['results'])} questions.", "quiz": None}
 
 
 async def respond(state: StudyState) -> dict:
@@ -211,8 +309,19 @@ async def respond(state: StudyState) -> dict:
 # Edges
 # ---------------------------------------------------------------------------
 
+async def remember(state: StudyState) -> dict:
+    # Personal statements arrive as ordinary chat; quiz turns ("quiz me", "my answer is B") never update memory
+    if state["intent"] in ("qa", "explain") and memory.should_remember(state["question"]):
+        try:
+            await memory.update(state["question"])
+        except Exception:
+            log.warning("learner memory update failed", exc_info=True)
+    return {}
+
+
 def _after_route(state: StudyState) -> str:
-    return {"connect": "connect", "quiz": "deferred", "review": "deferred"}.get(state["intent"], "retrieve")
+    return {"connect": "connect", "quiz": "quiz_start", "review": "quiz_start", "quiz_answer": "quiz_answer",
+            "quiz_stop": "quiz_stop"}.get(state["intent"], "retrieve")
 
 
 def _after_grade(state: StudyState) -> str:
@@ -236,18 +345,20 @@ def _after_check(state: StudyState) -> str:
 def build(checkpointer):
     g = StateGraph(StudyState)
     for node in (route_intent, retrieve, grade_documents, rewrite_query, generate, self_check,
-                 not_found, connect, deferred, respond):
+                 not_found, connect, quiz_start, quiz_answer, quiz_stop, respond, remember):
         g.add_node(node.__name__, node)
     g.add_edge(START, "route_intent")
-    g.add_conditional_edges("route_intent", _after_route, ["retrieve", "connect", "deferred"])
+    g.add_conditional_edges("route_intent", _after_route,
+                            ["retrieve", "connect", "quiz_start", "quiz_answer", "quiz_stop"])
     g.add_edge("retrieve", "grade_documents")
     g.add_conditional_edges("grade_documents", _after_grade, ["generate", "rewrite_query", "not_found"])
     g.add_conditional_edges("rewrite_query", _after_rewrite, ["retrieve", "not_found"])
     g.add_edge("generate", "self_check")
     g.add_conditional_edges("self_check", _after_check, ["generate", "respond"])
-    for node in ("not_found", "connect", "deferred"):
+    for node in ("not_found", "connect", "quiz_start", "quiz_answer", "quiz_stop"):
         g.add_edge(node, "respond")
-    g.add_edge("respond", END)
+    g.add_edge("respond", "remember")
+    g.add_edge("remember", END)
     return g.compile(checkpointer=checkpointer)
 
 

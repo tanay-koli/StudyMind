@@ -223,8 +223,12 @@ def test_agent_error_event_then_next_turn_works(client, monkeypatch):
     monkeypatch.setattr(agent, "search_material", boom)
     ev = _events(client.post("/agent", json={"message": "q", "thread_id": "y"}))
     assert ev[-1] == {"event": "error", "error": "RuntimeError: ollama down"}
-    ev = _events(client.post("/agent", json={"message": "quiz me", "thread_id": "y"}))
-    assert ev[-1]["event"] == "done" and ev[-1]["answer"] == agent.DEFERRED
+    async def fake_connect(a, b):
+        return {"summary": f"{a}~{b}"}
+
+    monkeypatch.setattr(agent.query, "connect_topics", fake_connect)
+    ev = _events(client.post("/agent", json={"message": "connect cells with tissues", "thread_id": "y"}))
+    assert ev[-1]["event"] == "done" and ev[-1]["answer"] == "cells~tissues"
 
 
 def test_agent_history_unknown_thread_is_empty(client):
