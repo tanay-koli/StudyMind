@@ -121,12 +121,17 @@ async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dic
         if not hits:
             result["answer"] = empty_msg
             return result
-        context, result["citations"] = _context(hits)
         result["sources"] = list(dict.fromkeys(h.source_title for h in hits))
-        result["answer"] = await llm.complete(f"{context}\n\nQuestion: {question}", system=ANSWER_SYSTEM)
+        result["answer"], result["citations"] = await _generate(question, hits)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
+
+
+async def _generate(question: str, hits: list[Hit]) -> tuple[str, list[dict]]:
+    """Grounded answer citing hits as [n], and the matching citations."""
+    context, citations = _context(hits)
+    return await llm.complete(f"{context}\n\nQuestion: {question}", system=ANSWER_SYSTEM), citations
 
 
 async def ask(question: str) -> dict:
