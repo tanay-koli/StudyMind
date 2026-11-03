@@ -37,6 +37,10 @@ def setup_tracing() -> bool:
 
 
 class LLMClient:
+    def __init__(self):
+        # Running totals, so the eval runner can read per-question deltas
+        self.usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
+
     async def complete(self, prompt: str, system: str | None = None,
                        images: list[bytes] | None = None, **kwargs) -> str:
         """Single-turn completion; returns the text. PNG images go with the prompt. Raises on provider errors."""
@@ -63,6 +67,10 @@ class LLMClient:
             cost = litellm.completion_cost(completion_response=resp)
         except Exception:
             cost = 0.0  # unknown pricing (local models)
+        self.usage["calls"] += 1
+        self.usage["prompt_tokens"] += getattr(usage, "prompt_tokens", None) or 0
+        self.usage["completion_tokens"] += getattr(usage, "completion_tokens", None) or 0
+        self.usage["cost_usd"] += cost
         log.info(
             "llm model=%s prompt_tokens=%s completion_tokens=%s cost_usd=%.6f latency_s=%.2f",
             model,

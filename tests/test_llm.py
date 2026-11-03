@@ -63,3 +63,16 @@ async def test_complete_json_raises_on_no_object(monkeypatch):
     monkeypatch.setattr(client, "complete", fake_complete)
     with pytest.raises(ValueError):
         await client.complete_json("q")
+
+
+@pytest.mark.asyncio
+async def test_usage_tally_counts_calls_and_tokens(monkeypatch):
+    async def fake_acompletion(**kw):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+                               usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2))
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    client = LLMClient()
+    await client.complete("hi")
+    await client.complete("again")
+    assert client.usage == {"calls": 2, "prompt_tokens": 10, "completion_tokens": 4, "cost_usd": 0.0}

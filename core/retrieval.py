@@ -280,8 +280,8 @@ class Retriever(Protocol):
 
 
 def relevant(hits: list) -> list:
-    """Hits (or hit dicts) that clear the reranker cutoff; all of them for the dense retriever (cosine scores)."""
-    if settings.retriever == "dense":
+    """Hits (or hit dicts) that clear the reranker cutoff; all of them without a reranker (cosine or RRF scores)."""
+    if settings.retriever == "dense" or not settings.rerank:
         return list(hits)
     return [h for h in hits if (h.score if isinstance(h, Hit) else h["score"]) >= settings.relevance_min]
 
@@ -321,6 +321,14 @@ def _hit(c: Chunk, title: str, score: float, media: dict[int, dict]) -> Hit:
     return Hit(c.id, c.source_id, title, c.page, c.section_heading, c.text, float(score), media.get(c.id))
 
 
+def _no_figures(ids: list[int]) -> list[int]:
+    """ids minus figure-caption chunks, when settings.figures is off."""
+    if settings.figures:
+        return ids
+    figs = {cid for cid, m in _media_for(ids).items() if m["kind"] == "figure"}
+    return [i for i in ids if i not in figs]
+
+
 class HybridRetriever:
     """Dense + BM25, fused with RRF, then reranked with a cross-encoder."""
 
@@ -346,10 +354,16 @@ class HybridRetriever:
                 ).points]
                 for vector, using in ((dense, "dense"), (sparse, "bm25"))
             ]
-        fused = rrf(rankings)[:CANDIDATES]
+        fused = _no_figures(rrf(rankings))[:CANDIDATES]
         rows = _hydrate(fused) if fused else []
         if not rows:
             return []
+        if not settings.rerank:
+            pos = {cid: i for i, cid in enumerate(fused)}
+            top = sorted(rows, key=lambda r: pos[r[0].id])[:k]
+            media = _media_for([c.id for c, _ in top])
+            # Score = 1 / (RRF_K + fused rank): keeps the order, never mistaken for a reranker logit
+            return [_hit(c, title, 1.0 / (RRF_K + pos[c.id] + 1), media) for c, title in top]
         scores = rerank(rerank_query or query, [_search_text(c) for c, _ in rows])
         ranked = sorted(zip(rows, scores), key=lambda x: x[1], reverse=True)[:k]
         media = _media_for([c.id for (c, _), _ in ranked])
@@ -372,9 +386,11 @@ class DenseRetriever:
             if not client.collection_exists(name):
                 return []
             points = client.query_points(
-                name, query=vector, using="dense", query_filter=_topic_filter(topic_id), limit=k,
+                name, query=vector, using="dense", query_filter=_topic_filter(topic_id),
+                limit=k if settings.figures else k + 10,
             ).points
         scores = {p.id: p.score for p in points}
+        scores = {i: scores[i] for i in _no_figures(list(scores))[:k]}
         rows = _hydrate(list(scores)) if scores else []
         rows.sort(key=lambda r: scores[r[0].id], reverse=True)
         media = _media_for([c.id for c, _ in rows])

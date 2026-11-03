@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     llm_model: str = "ollama/qwen2.5:7b"
     # Captions figures; needs image input
     vision_model: str = "ollama/qwen2.5vl:7b"
+    # Eval judge; empty means llm_model
+    judge_model: str = ""
     ollama_base_url: str = "http://localhost:11434"
 
     database_url: str = f"sqlite:///{(DATA_DIR / 'studymind.db').as_posix()}"
@@ -42,6 +44,8 @@ class Settings(BaseSettings):
     embed_model: str = "bge-small"  # bge-small | nomic
     retriever: str = "hybrid"  # hybrid | dense
     query_rewrite: str = "none"  # none | multi | hyde
+    rerank: bool = True  # False: hybrid returns the RRF order (eval ablation)
+    figures: bool = True  # False: figure-caption chunks are left out of results (eval ablation)
     qdrant_path: str = (DATA_DIR / "qdrant").as_posix()  # ":memory:" in tests
     # Reranker logit a hit needs to count as relevant (measured: related -3.4..4.0, unrelated -5.2 and below)
     relevance_min: float = -4.0

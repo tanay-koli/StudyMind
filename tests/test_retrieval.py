@@ -259,3 +259,40 @@ def test_index_chunks_writes_media():
         "spoken": ("video", 75.4, "https://youtu.be/abc?t=75", None, None),
         "Figure (p.3): x": ("figure", None, None, "x.png", "1,2,3,4"),
     }
+
+
+def _plant_heap():
+    sid = _src()
+    retrieval.index_chunks(sid, "general", [Block(1, None, "heap insert is log n"),
+                                            Block(2, None, "heap delete min is log n"),
+                                            Block(3, None, "heap build is linear")])
+    retrieval.index_chunks(sid, "general", [Block(4, None, "Figure: heap insert diagram")],
+                           figure={"image_path": "x.png", "bbox": "0,0,1,1"})
+
+
+@pytest.mark.asyncio
+async def test_rerank_off_skips_cross_encoder_and_keeps_all_relevant(monkeypatch):
+    _plant_heap()
+    monkeypatch.setattr(settings, "retriever", "hybrid")
+    monkeypatch.setattr(settings, "rerank", False)
+
+    def boom(q, t):
+        raise AssertionError("reranked")
+
+    monkeypatch.setattr(retrieval, "rerank", boom)
+    hits = await retrieval.HybridRetriever().retrieve("heap", "general")
+    assert hits and all(h.score < 1 for h in hits)  # RRF scores, not rerank logits
+    assert retrieval.relevant(hits) == hits
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["hybrid", "dense"])
+async def test_figures_off_drops_figure_hits(monkeypatch, kind):
+    _plant_heap()
+    monkeypatch.setattr(settings, "retriever", kind)
+    monkeypatch.setattr(settings, "figures", True)
+    hits = await retrieval.base_retriever().retrieve("heap insert diagram", "general")
+    assert any((h.media or {}).get("kind") == "figure" for h in hits)
+    monkeypatch.setattr(settings, "figures", False)
+    hits = await retrieval.base_retriever().retrieve("heap insert diagram", "general")
+    assert hits and not any((h.media or {}).get("kind") == "figure" for h in hits)
