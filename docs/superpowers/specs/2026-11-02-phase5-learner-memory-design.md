@@ -102,8 +102,9 @@ class Question(BaseModel):
 - **`grade(question, answer, facts) -> tuple[Optional[str], str]`** returns `(verdict, feedback)`.
   - **Mcq:** the chosen letter is found in this order:
     1. a reply that is just one letter A–D (any case, after stripping `()` and `.`) is that letter;
-    2. otherwise, the first standalone uppercase A–D in the reply ("I think it's B because a cell…" → B);
-    3. otherwise, a case-insensitive match with an option's text.
+    2. otherwise, a reply that starts with a letter and `)`, `.` or `:` ("d) zinc", "(c) lead") is that letter;
+    3. otherwise, a case-insensitive match with an option's text ("Vitamin C" is that option, not letter C);
+    4. otherwise, the first standalone uppercase A–D in the reply ("I think it's B because a cell…" → B).
 
     The answer is correct when that letter is the right one.
     - Correct: `("correct", "")` with no LLM call.
@@ -142,9 +143,11 @@ class Question(BaseModel):
 - **State** gains `quiz: Optional[dict]`: `{"mode": "quiz"|"review", "topic_id", "targets": [[concept, chunk_id]],
   "index": int, "current": Question dict, "results": [verdict or None]}`. `route_intent` does not reset it.
 - **Routing:**
-  - If `state.get("quiz")` is set and the message matches `^\s*(stop|end( the)? quiz|quit)\b` →
-    intent `quiz_stop`.
-  - Else, if a quiz is active and the message is not a new quiz or review command → intent `quiz_answer`.
+  - If `state.get("quiz")` is set and the whole message is a stop command,
+    `^\s*(stop|end( the)? quiz|quit)\s*[.!]?\s*$` → intent `quiz_stop`.
+    "Stop codons end translation" is an answer.
+  - Else, if a quiz is active and the whole message is not a new-session command
+    (`review`, `review my weak topics`, `quiz me`, `quiz me on …`) → intent `quiz_answer`.
   - Else: `classify`, as now. A `quiz` or `review` intent → `quiz_start` (it replaces any active quiz).
 - **Quiz topic:** `about` is the text after `on` / `about` in the message (for example "quiz me on enzymes"
   → "enzymes"), else None.

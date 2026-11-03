@@ -213,3 +213,26 @@ async def test_grade_uses_stored_citation_text(llm_script):
     llm_script["json"] = [{"verdict": "correct", "feedback": "Yes."}]
     await tutor.grade(_question(chunk_id=999), "lower activation energy")
     assert "Enzymes lower activation energy." in llm_script["calls"][0][0]
+
+
+@pytest.mark.parametrize("answer,options,letter", [
+    ("d) zinc", ["iron", "copper", "lead", "zinc"], "D"),
+    ("(c) lead", ["iron", "copper", "lead", "zinc"], "C"),
+    ("Vitamin C", ["Vitamin C", "Iron", "Zinc", "Calcium"], "A"),   # option text before a stray capital letter
+])
+def test_mcq_letter_more_forms(answer, options, letter):
+    assert tutor._mcq_letter(answer, options) == letter
+
+
+@pytest.mark.asyncio
+async def test_connection_errors_are_not_treated_as_bad_replies(llm_script):
+    # Ollama down mid-quiz must surface as an error (the agent keeps the quiz), not as "ungraded" or "no question"
+    llm_script["json"] = [ConnectionError("ollama down")]
+    with pytest.raises(ConnectionError):
+        await tutor.grade(_question(), "they help")
+    from tests.planting import plant
+
+    _, ids = plant(["Enzymes lower activation energy."], {0: [("Enzyme", "lowers", "Activation energy")]})
+    llm_script["json"] = [TimeoutError("timed out")]
+    with pytest.raises(TimeoutError):
+        await tutor.generate_question("enzyme", ids[0], "mcq")

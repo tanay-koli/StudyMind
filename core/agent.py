@@ -91,7 +91,9 @@ _CONNECT = (
     re.compile(r"\bconnect (.+?) (?:with|and|to) (.+)", re.I),
 )
 _EXPLAIN = re.compile(r"^\s*(explain|why|how does|how do|what is|what are)\b", re.I)
-QUIZ_STOP = re.compile(r"^\s*(stop|end( the)? quiz|quit)\b", re.I)
+# During a quiz only whole-message commands count: "Stop codons end translation" is an answer
+QUIZ_STOP = re.compile(r"^\s*(stop|end( the)? quiz|quit)\s*[.!]?\s*$", re.I)
+_NEW_SESSION = re.compile(r"^\s*(review( my weak (topics|concepts))?|(quiz|test) me( on .+)?)\s*[.!?]?\s*$", re.I)
 
 
 def _quiz_about(message: str) -> Optional[str]:
@@ -139,7 +141,7 @@ async def route_intent(state: StudyState) -> dict:
     question = state["question"]
     if state.get("quiz") and QUIZ_STOP.match(question):
         intent, topics = "quiz_stop", []
-    elif state.get("quiz") and not (_QUIZ.search(question) or _REVIEW.search(question)):
+    elif state.get("quiz") and not _NEW_SESSION.match(question):
         intent, topics = "quiz_answer", []  # a new quiz/review command replaces the session instead
     else:
         intent, topics = classify(question, state.get("topics"), state.get("intent_hint"))

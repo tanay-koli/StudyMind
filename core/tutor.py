@@ -111,7 +111,7 @@ async def generate_question(concept: str, chunk_id: int, kind: str, facts: str =
             q = Question(kind=kind, question=str(reply["question"]).strip(), options=options if kind == "mcq" else [],
                          answer=str(reply["answer"]).strip(), difficulty=reply.get("difficulty", "medium"),
                          concept=concept, chunk_id=chunk_id, citation=citation)
-        except Exception:
+        except (ValueError, KeyError, TypeError):  # a bad reply (pydantic errors are ValueErrors); outages propagate
             continue
         if q.question and q.answer and (kind == "short" or (
                 len(q.options) == 4 and all(q.options) and q.answer.upper() in _LETTERS)):
@@ -122,15 +122,17 @@ async def generate_question(concept: str, chunk_id: int, kind: str, facts: str =
 
 
 def _mcq_letter(answer: str, options: list[str]) -> Optional[str]:
-    """The option chosen: a one-letter reply, else the first standalone uppercase A–D, else option text."""
+    """The option chosen: a one-letter reply, "d) zinc", the option's text, else the first standalone uppercase A–D."""
     bare = answer.strip().strip("().").strip()
     if len(bare) == 1 and bare.upper() in _LETTERS:
         return bare.upper()
-    if m := re.search(r"\b([A-D])\b", answer):
-        return m.group(1)
+    if m := re.match(r"\s*\(?([a-dA-D])[).:]", answer):
+        return m.group(1).upper()
     for letter, option in zip(_LETTERS, options):
         if bare.casefold() == option.strip().casefold():
-            return letter
+            return letter  # before the capital-letter rule: "Vitamin C" is an option's text, not letter C
+    if m := re.search(r"\b([A-D])\b", answer):
+        return m.group(1)
     return None
 
 
@@ -152,7 +154,7 @@ async def grade(question: Question, answer: str, facts: str = "") -> tuple[Optio
     for _ in range(2):
         try:
             reply = await llm.complete_json(prompt, system=_system(TUTOR_SYSTEM, facts))
-        except Exception:
+        except ValueError:  # no JSON in the reply; outages propagate so the agent keeps the quiz
             continue
         if reply.get("verdict") in QUALITY:
             return reply["verdict"], str(reply.get("feedback", "")).strip()

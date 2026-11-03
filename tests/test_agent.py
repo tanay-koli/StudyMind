@@ -407,3 +407,22 @@ async def test_done_when_review_targets_planted_mistakes(script, monkeypatch):
     _, st = await run("review", topic_id=tid)
     assert [c for c, _ in st["quiz"]["targets"]] == ["alpha", "beta"]
     assert st["answer"].startswith("Question 1/2 · alpha")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["Stop codons end translation", "Review of the evidence says it binds"])
+async def test_answers_starting_with_command_words_are_answers(quiz, answer):
+    f, run = quiz
+    await run("quiz me")
+    f["verdicts"] = [("partial", "Close.")]
+    _, st = await run(answer)
+    assert st["answer"].startswith("🟡 Partly right.") and st["quiz"]["index"] == 1 and f["picks"][-1]["review"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["stop", "Stop.", "end quiz", "quit!"])
+async def test_exact_stop_commands_still_stop(quiz, command):
+    f, run = quiz
+    await run("quiz me")
+    _, st = await run(command)
+    assert st["quiz"] is None and st["answer"].startswith("Quiz stopped")
