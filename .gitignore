@@ -79,3 +79,7 @@ data/qdrant/
 
 # Eval outputs
 eval/results/
+
+# Eval corpora (fetched by python -m eval.ingest) and their indexes
+eval/corpus/*.pdf
+data/eval/
