@@ -73,8 +73,11 @@ StudyMind/
 │   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
 │   └── graph_utils.py     # Build connection graphs, render pyvis HTML
 ├── eval/
-│   ├── dataset.jsonl      # Eval questions (add ~15 a week)
-│   └── run.py             # python -m eval.run --retriever hybrid|dense
+│   ├── dataset.jsonl      # Questions with gold {source, page, quote} anchors
+│   ├── configs.py         # Experiment ladder B–H (one change per row)
+│   ├── run.py / judge.py / report.py   # run a config → LLM-judge it → README table
+│   ├── label.py / ingest.py            # labelling CLI; builds the eval corpora
+│   └── results/           # <config>.json per run, judge cache
 ├── ui/
 │   └── app.py             # Streamlit UI — calls the API only
 ├── data/                  # studymind.db, agent.db, qdrant/, figures/, models/, uploads/, audio/ (git-ignored)
@@ -143,13 +146,23 @@ All tests run offline: Ollama is mocked with `httpx.MockTransport`, the LLM, emb
 
 ## 📏 Evaluation
 
+Every design choice is a row in `eval/configs.py`, each the previous best plus one change. The eval uses its own corpora in `data/eval/<fixed|structure>/`, never your study data.
+
 ```bash
-python -m eval.run --retriever hybrid
-python -m eval.run --retriever dense    # baseline: dense vectors only, no BM25/RRF/rerank
-python -m eval.run --retriever hybrid --rewrite multi   # query rewriting: none | multi | hyde
+python -m eval.ingest                     # fetch the corpus, ingest it with both chunkers (once)
+python -m eval.label propose --n 8 --type text     # LLM drafts questions; you accept / edit / skip
+python -m eval.label find "your question" --type multihop   # tick gold among the top 10 hits
+python -m eval.run --config E             # retrieve + answer → eval/results/E.json
+python -m eval.judge E                    # faithfulness + correctness (LLM judge, cached)
+python -m eval.judge --calibrate          # hand-label 30 answers; prints judge agreement (κ)
+python -m eval.report                     # rewrites the table below
 ```
 
-Results go to `eval/results/<retriever>-<embed>-<date>.jsonl`. Stop the API first: embedded Qdrant allows one process at a time.
+Gold passages are anchored by a verbatim quote (or "figure on page N"), so they survive re-ingest and score both chunkers. Stop the API first: embedded Qdrant allows one process at a time.
+
+<!-- eval:start -->
+_No results yet._
+<!-- eval:end -->
 
 ---
 
