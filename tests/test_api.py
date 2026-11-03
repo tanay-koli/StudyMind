@@ -251,3 +251,33 @@ def test_figure_endpoint(client, tmp_path):
     assert client.get("/figures/9999").status_code == 404
     img.unlink()
     assert client.get(f"/figures/{fig_id}").status_code == 404
+
+
+def test_learner_endpoint_orders_mastery_and_counts_due(client):
+    from datetime import date, timedelta
+    from core.db import ConceptMastery, LearnerFact
+
+    today, tomorrow = date.today().isoformat(), (date.today() + timedelta(1)).isoformat()
+    with session() as s:
+        s.add_all([ConceptMastery(concept="gamma", ease=2.6, next_review=tomorrow, last_verdict="correct", attempts=1),
+                   ConceptMastery(concept="beta", ease=2.36, next_review=tomorrow, last_verdict="partial", attempts=1, wrong=1),
+                   ConceptMastery(concept="alpha", ease=1.96, next_review=tomorrow, last_verdict="wrong", attempts=1, wrong=1),
+                   ConceptMastery(concept="delta", ease=2.6, next_review=today, last_verdict="correct", attempts=2),
+                   LearnerFact(fact="Exam on 12 Dec")])
+        s.commit()
+    body = client.get("/learner").json()
+    assert [m["concept"] for m in body["mastery"]] == ["delta", "alpha", "beta", "gamma"]
+    assert body["due"] == 1 and [f["fact"] for f in body["facts"]] == ["Exam on 12 Dec"]
+    assert set(body["mastery"][0]) >= {"concept", "ease", "interval_days", "next_review", "last_verdict", "attempts", "wrong"}
+
+
+def test_delete_fact(client):
+    from core.db import LearnerFact
+
+    with session() as s:
+        s.add(LearnerFact(fact="Prefers diagrams"))
+        s.commit()
+    fid = client.get("/learner").json()["facts"][0]["id"]
+    assert client.delete(f"/learner/facts/{fid}").status_code == 200
+    assert client.delete(f"/learner/facts/{fid}").status_code == 404
+    assert client.get("/learner").json()["facts"] == []

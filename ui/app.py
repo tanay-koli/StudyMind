@@ -290,6 +290,24 @@ with st.sidebar:
         st.session_state.health = api("GET", "/health")
         st.rerun()
 
+    # Learner progress: what the review would ask about, and what StudyMind remembers about you
+    learner = api("GET", "/learner")
+    with st.expander("📈 Your progress"):
+        st.caption(f"{learner['due']} concepts due today")
+        for m in learner["mastery"][:5]:
+            mark = {"correct": "✅", "partial": "🟡", "wrong": "❌"}.get(m["last_verdict"], "•")
+            st.markdown(f"{mark} {m['concept']} — next review {m['next_review']}")
+        if not learner["mastery"]:
+            st.caption("No quiz answers yet. Try 'quiz me' in the Agent tab.")
+        if learner["facts"]:
+            st.markdown("**Remembered about you**")
+        for f in learner["facts"]:
+            col_fact, col_del = st.columns([5, 1])
+            col_fact.caption(f["fact"])
+            if col_del.button("🗑", key=f"fact_{f['id']}", help="Forget this"):
+                api("DELETE", f"/learner/facts/{f['id']}")
+                st.rerun()
+
     st.markdown("---")
 
     # Load topics and sources
