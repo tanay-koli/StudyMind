@@ -256,18 +256,23 @@ def test_figure_endpoint(client, tmp_path):
 def test_learner_endpoint_orders_mastery_and_counts_due(client):
     from datetime import date, timedelta
     from core.db import ConceptMastery, LearnerFact
+    from tests.planting import plant
 
+    plant(["a", "b", "c", "d"], {i: [(n, "is", n)] for i, n in enumerate(["alpha", "beta", "gamma", "delta"])})
     today, tomorrow = date.today().isoformat(), (date.today() + timedelta(1)).isoformat()
     with session() as s:
         s.add_all([ConceptMastery(concept="gamma", ease=2.6, next_review=tomorrow, last_verdict="correct", attempts=1),
                    ConceptMastery(concept="beta", ease=2.36, next_review=tomorrow, last_verdict="partial", attempts=1, wrong=1),
                    ConceptMastery(concept="alpha", ease=1.96, next_review=tomorrow, last_verdict="wrong", attempts=1, wrong=1),
                    ConceptMastery(concept="delta", ease=2.6, next_review=today, last_verdict="correct", attempts=2),
+                   # its source was deleted: review can't ask it, so the panel must not list it
+                   ConceptMastery(concept="orphan", ease=1.3, next_review=today, last_verdict="wrong", attempts=3, wrong=3),
                    LearnerFact(fact="Exam on 12 Dec")])
         s.commit()
     body = client.get("/learner").json()
     assert [m["concept"] for m in body["mastery"]] == ["delta", "alpha", "beta", "gamma"]
-    assert body["due"] == 1 and [f["fact"] for f in body["facts"]] == ["Exam on 12 Dec"]
+    # the review rule: due today, or last answered wrong / partly right
+    assert body["to_review"] == 3 and [f["fact"] for f in body["facts"]] == ["Exam on 12 Dec"]
     assert set(body["mastery"][0]) >= {"concept", "ease", "interval_days", "next_review", "last_verdict", "attempts", "wrong"}
 
 

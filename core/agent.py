@@ -8,6 +8,7 @@ then check the answer against the cited passages. Quiz and review sessions run
 one question per turn and survive between turns in the checkpointed state.
 """
 
+import asyncio
 import dataclasses
 import logging
 from datetime import date, timedelta
@@ -285,10 +286,11 @@ async def quiz_answer(state: StudyState) -> dict:
     q = tutor.Question(**quiz["current"])
     facts = memory.profile()
     verdict, feedback = await tutor.grade(q, state["question"], facts)
-    tutor.record(q, state["question"], verdict, feedback, quiz["topic_id"])
     results = quiz["results"] + [[q.concept, verdict]]
     line = _feedback(q, verdict, feedback)
     nq, targets = await _next_question(quiz["targets"], quiz["index"] + 1, facts)
+    # Recorded only once the turn can't fail any more: a retried answer must not move SM-2 twice
+    tutor.record(q, state["question"], verdict, feedback, quiz["topic_id"])
     if nq is None:
         return {"answer": f"{line}\n\n{_summary(results)}", "citations": [q.citation], "quiz": None}
     nxt = dict(quiz, targets=targets, index=quiz["index"] + 1, current=nq.model_dump(), results=results)
@@ -311,13 +313,23 @@ async def respond(state: StudyState) -> dict:
 # Edges
 # ---------------------------------------------------------------------------
 
+_background: set[asyncio.Task] = set()  # memory updates in flight (a reference keeps them from being collected)
+
+
+async def _remember_later(message: str) -> None:
+    try:
+        await memory.update(message)
+    except Exception:
+        log.warning("learner memory update failed", exc_info=True)
+
+
 async def remember(state: StudyState) -> dict:
-    # Personal statements arrive as ordinary chat; quiz turns ("quiz me", "my answer is B") never update memory
+    # Personal statements arrive as ordinary chat; quiz turns ("quiz me", "my answer is B") never update memory.
+    # The update is a model call: run it in the background so the answer isn't held back by it
     if state["intent"] in ("qa", "explain") and memory.should_remember(state["question"]):
-        try:
-            await memory.update(state["question"])
-        except Exception:
-            log.warning("learner memory update failed", exc_info=True)
+        task = asyncio.create_task(_remember_later(state["question"]))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
     return {}
 
 

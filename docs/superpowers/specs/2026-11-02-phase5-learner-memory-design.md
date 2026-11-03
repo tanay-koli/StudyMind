@@ -85,10 +85,14 @@ class Question(BaseModel):
 ```
 
 - **`pick_targets(topic_id, about=None, review=False, n=SESSION_SIZE) -> list[tuple[str, int]]`**
-  - **Quiz:** retrieve `about` (else the topic's name, else "overview") with
-    `get_retriever(rewrite=False).retrieve(query, topic_id, k=12)`, keep `relevant()` hits, and take
+  - **Quiz on a subject ("quiz me on X"):** retrieve `about` with
+    `get_retriever(rewrite=False).retrieve(about, topic_id, k=12)`, keep `relevant()` hits, and take
     `chunk_concepts` of those chunks in rank order. The result is distinct concepts with the chunk they
     came from, at most `n`.
+  - **Quiz with no subject ("quiz me"):** passages rarely contain their topic's name, so there is no search.
+    Take the scope's concepts from `concept_edge` (the topic's, or all of them). Order them: never quizzed
+    first (most mentioned first, then first seen), then the quizzed ones by lowest ease. Each comes with the
+    chunk that mentions it most.
   - **Review:** `ConceptMastery` rows where `next_review <= today` or `last_verdict in ("wrong", "partial")`,
     ordered by `(next_review, ease, -wrong, concept)`. When `topic_id` is set, only concepts with a chunk in that
     topic count. Each concept gets its best chunk from `chunks_for_concept`. At most `n`. An empty list
@@ -183,14 +187,15 @@ class Question(BaseModel):
 ## API
 
 - `GET /learner` → `{"facts": [{"id", "fact", "updated_at"}], "mastery": [...ConceptMastery fields],
-  "due": int}`. Mastery is ordered as review would pick it (`next_review, ease, -wrong, concept`); `due` counts
-  `next_review <= today`.
+  "to_review": int}`. Mastery is ordered as review would pick it (`next_review, ease, -wrong, concept`) and
+  leaves out concepts with no chunk left (their source was deleted). `to_review` counts with the review rule:
+  `next_review <= today` or the last verdict was wrong or partial.
 - `DELETE /learner/facts/{id}` → 404 for an unknown id.
 
 ## UI
 
 The sidebar gets a "📈 Your progress" expander:
-- "N concepts due today";
+- "N concepts to review" (the review rule, as `to_review`);
 - the first 5 mastery rows (concept, last result emoji, next review);
 - the facts, each with a 🗑 button that calls the DELETE endpoint.
 

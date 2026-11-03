@@ -1,5 +1,6 @@
 """StudyMind — the LangGraph agent: routing, corrective retrieval, self-check, persistence (offline)."""
 
+import asyncio
 import re
 
 import pytest
@@ -365,7 +366,8 @@ async def test_remember_skips_quiz_turns_and_feeds_generate(quiz, script, monkey
     await run("stop")
     s["search"] = [[_doc(2.0)]]
     s["complete"] = ["Noted [1]."]
-    await run("My exam is on 12 Dec")          # normal chat: remembered
+    await run("My exam is on 12 Dec")          # normal chat: remembered (in the background)
+    await asyncio.gather(*agent._background)
     assert calls == ["My exam is on 12 Dec"]
     with session() as db:
         db.add(LearnerFact(fact="Prefers short examples"))
@@ -426,3 +428,43 @@ async def test_exact_stop_commands_still_stop(quiz, command):
     await run("quiz me")
     _, st = await run(command)
     assert st["quiz"] is None and st["answer"].startswith("Quiz stopped")
+
+
+@pytest.mark.asyncio
+async def test_memory_update_does_not_delay_the_answer(script, monkeypatch):
+    s, log, run = script
+    release = asyncio.Event()
+
+    async def slow_update(message):
+        await release.wait()  # a slow model call
+        return 1
+
+    monkeypatch.setattr(memory, "update", slow_update)
+    s["search"] = [[_doc(2.0)]]
+    s["complete"] = ["ATP stores energy [1]."]
+    _, st = await asyncio.wait_for(run("Can you explain to me how ATP works?"), timeout=5)
+    assert st["answer"] == "ATP stores energy [1]."
+    release.set()
+    await asyncio.gather(*agent._background)
+
+
+@pytest.mark.asyncio
+async def test_failed_next_question_does_not_record_the_answer_twice(quiz, monkeypatch):
+    f, run = quiz
+    await run("quiz me")
+    calls = {"n": 0}
+    real = tutor.generate_question
+
+    async def flaky(concept, chunk_id, kind, facts=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db hiccup")
+        return await real(concept, chunk_id, kind, facts)
+
+    monkeypatch.setattr(tutor, "generate_question", flaky)
+    f["verdicts"] = [("correct", ""), ("correct", "")]
+    with pytest.raises(RuntimeError):
+        await run("B")
+    await run("B")
+    with session() as db:
+        assert len(db.exec(select_attempts()).all()) == 1

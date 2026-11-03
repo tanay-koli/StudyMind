@@ -65,12 +65,17 @@ async def update(message: str) -> int:
     applied = 0
     now = datetime.now().isoformat()
     with session() as s:
-        count = len(current)
+        count, deleted = len(current), set()
         for op in ops:
             if not isinstance(op, dict):
                 continue
             kind, fact = op.get("op"), str(op.get("fact") or "").strip()
-            row = s.get(LearnerFact, op["id"]) if isinstance(op.get("id"), int) else None
+            try:
+                fid = int(op["id"])  # models often send ids as strings
+            except (KeyError, TypeError, ValueError):
+                fid = None
+            # the session still returns a row deleted earlier in this reply: never count it twice
+            row = s.get(LearnerFact, fid) if fid is not None and fid not in deleted else None
             if kind == "ADD" and fact and count < MAX_FACTS:
                 s.add(LearnerFact(fact=fact, updated_at=now))
                 count += 1
@@ -79,6 +84,7 @@ async def update(message: str) -> int:
                 s.add(row)
             elif kind == "DELETE" and row is not None:
                 s.delete(row)
+                deleted.add(fid)
                 count -= 1
             else:
                 continue

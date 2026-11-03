@@ -293,7 +293,7 @@ with st.sidebar:
     # Learner progress: what the review would ask about, and what StudyMind remembers about you
     learner = api("GET", "/learner")
     with st.expander("📈 Your progress"):
-        st.caption(f"{learner['due']} concepts due today")
+        st.caption(f"{learner['to_review']} concepts to review")
         for m in learner["mastery"][:5]:
             mark = {"correct": "✅", "partial": "🟡", "wrong": "❌"}.get(m["last_verdict"], "•")
             st.markdown(f"{mark} {m['concept']} — next review {m['next_review']}")

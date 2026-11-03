@@ -204,8 +204,9 @@ def move_source(source_id: int, topic_id: str) -> Optional[dict]:
         s.exec(update(Chunk).where(Chunk.source_id == source_id).values(topic_id=topic_id))
         s.exec(update(ConceptEdge).where(ConceptEdge.source_id == source_id).values(topic_id=topic_id))
         s.exec(update(PendingFigure).where(PendingFigure.source_id == source_id).values(topic_id=topic_id))
-        retrieval.move_source_points(source_id, topic_id)
         s.commit()
+    # After the commit: a failed commit must not leave the search index pointing at the new topic
+    retrieval.move_source_points(source_id, topic_id)
     invalidate_caches(old_topic)
     invalidate_caches(topic_id)
     return src.model_dump()

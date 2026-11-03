@@ -236,3 +236,27 @@ async def test_connection_errors_are_not_treated_as_bad_replies(llm_script):
     llm_script["json"] = [TimeoutError("timed out")]
     with pytest.raises(TimeoutError):
         await tutor.generate_question("enzyme", ids[0], "mcq")
+
+
+@pytest.mark.asyncio
+async def test_quiz_without_subject_uses_the_topics_own_concepts():
+    # Passages rarely contain their topic's name, so "quiz me" must not search for it
+    from tests.planting import plant
+
+    tid, ids = plant(["Enzymes bind substrates.", "Glycolysis splits glucose."],
+                     {0: [("Enzyme", "binds", "Substrate")], 1: [("Glycolysis", "splits", "Glucose")]}, topic="Biology")
+    _mastery("enzyme", "correct", 2.8, TODAY + timedelta(6))  # already known well: asked last
+    targets = await tutor.pick_targets(tid, n=5)
+    assert [c for c, _ in targets] == ["substrate", "glycolysis", "glucose", "enzyme"]
+    assert dict(targets)["glycolysis"] == ids[1] and dict(targets)["enzyme"] == ids[0]
+    other, _ = plant(["Cells divide."], {0: [("Cell", "undergoes", "Mitosis")]}, topic="Other")
+    assert {c for c, _ in await tutor.pick_targets(None, n=10)} == {"enzyme", "substrate", "glycolysis", "glucose",
+                                                                   "cell", "mitosis"}
+
+
+@pytest.mark.parametrize("answer,letter", [
+    ("A cell divides into two", None),          # the article "A", not option A
+    ("I think it's A because cells divide", "A"),
+])
+def test_mcq_letter_article_a(answer, letter):
+    assert tutor._mcq_letter(answer, ["w", "x", "y", "z"]) == letter

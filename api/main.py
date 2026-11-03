@@ -211,14 +211,19 @@ async def ingest_text(body: TextIn):
 
 @app.get("/learner")
 def learner():
-    """Remembered facts, and concept mastery in the order a review would pick it."""
+    """Remembered facts, and concept mastery in the order a review would pick it.
+
+    Concepts whose material was deleted are left out: review can't ask them, so the panel shouldn't list them.
+    """
     with session() as s:
         rows = s.exec(select(ConceptMastery)).all()
-    rows = sorted(rows, key=lambda r: (r.next_review, r.ease, -r.wrong, r.concept))
+    rows = sorted((r for r in rows if concepts.chunks_for_concept(r.concept)),
+                  key=lambda r: (r.next_review, r.ease, -r.wrong, r.concept))
     today = date.today().isoformat()
     return {"facts": [f.model_dump() for f in memory.facts()],
             "mastery": [r.model_dump() for r in rows],
-            "due": sum(r.next_review <= today for r in rows)}
+            # the review rule: due today, or last answered wrong / partly right
+            "to_review": sum(r.next_review <= today or r.last_verdict in ("wrong", "partial") for r in rows)}
 
 
 @app.delete("/learner/facts/{fact_id}")

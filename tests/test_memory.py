@@ -69,3 +69,18 @@ def test_profile_text_and_delete():
     first = memory.facts()[0].id
     assert memory.delete(first) is True and memory.delete(first) is False
     assert memory.profile() == "About the student:\n- b"
+
+
+@pytest.mark.asyncio
+async def test_repeated_delete_does_not_open_the_cap_and_string_ids_work(replies):
+    with session() as s:
+        s.add_all(LearnerFact(fact=f"fact {i}") for i in range(memory.MAX_FACTS))
+        s.commit()
+    first = memory.facts()[0].id
+    replies.append({"ops": [{"op": "DELETE", "id": first}, {"op": "DELETE", "id": first},
+                            {"op": "ADD", "fact": "new one"}, {"op": "ADD", "fact": "one too many"},
+                            {"op": "UPDATE", "id": str(memory.facts()[1].id), "fact": "updated by string id"}]})
+    assert await memory.update("my facts changed") == 3
+    texts = [f.fact for f in memory.facts()]
+    assert len(texts) == memory.MAX_FACTS and "new one" in texts and "one too many" not in texts
+    assert "updated by string id" in texts

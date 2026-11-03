@@ -6,6 +6,7 @@ repetition per concept (concepts come from the Phase 2 concept triples).
 """
 
 import re
+from collections import Counter
 from datetime import date, timedelta
 from typing import Literal, Optional
 
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from core import concepts, query
-from core.db import ConceptMastery, QuizAttempt, session
+from core.db import ConceptEdge, ConceptMastery, QuizAttempt, session
 from core.llm import llm
 from core.retrieval import Hit, _hydrate, get_retriever, relevant
 
@@ -55,8 +56,10 @@ async def pick_targets(topic_id: Optional[str], about: Optional[str] = None, rev
                 targets.append((row.concept, chunks[0]))
         return targets[:n]
 
-    q = about or (query._topic_name(topic_id) if topic_id else "overview")
-    hits = relevant(await get_retriever(rewrite=False).retrieve(q, topic_id, k=12))
+    if about is None:
+        # No subject named: passages rarely contain their topic's name, so take the topic's own concepts
+        return _topic_targets(topic_id, n)
+    hits = relevant(await get_retriever(rewrite=False).retrieve(about, topic_id, k=12))
     tags = concepts.chunk_concepts([h.chunk_id for h in hits])
     targets, seen = [], set()
     for h in hits:
@@ -65,6 +68,24 @@ async def pick_targets(topic_id: Optional[str], about: Optional[str] = None, rev
                 seen.add(c)
                 targets.append((c, h.chunk_id))
     return targets[:n]
+
+
+def _topic_targets(topic_id: Optional[str], n: int) -> list[tuple[str, int]]:
+    """The scope's concepts: never quizzed first (most mentioned first), then the weakest; each with its best chunk."""
+    q = select(ConceptEdge).order_by(ConceptEdge.id)
+    if topic_id:
+        q = q.where(ConceptEdge.topic_id == topic_id)
+    with session() as s:
+        edges = s.exec(q).all()
+        mentions: dict[str, Counter] = {}
+        for e in edges:
+            for c in (e.head_norm, e.tail_norm):
+                mentions.setdefault(c, Counter())[e.chunk_id] += 1
+        known = {m.concept: m for m in s.exec(select(ConceptMastery).where(ConceptMastery.concept.in_(list(mentions))))}
+    order = {c: i for i, c in enumerate(mentions)}
+    ranked = sorted(mentions, key=lambda c: (c in known, known[c].ease if c in known else 0,
+                                             -sum(mentions[c].values()), order[c]))
+    return [(c, mentions[c].most_common(1)[0][0]) for c in ranked[:n]]
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +152,9 @@ def _mcq_letter(answer: str, options: list[str]) -> Optional[str]:
     for letter, option in zip(_LETTERS, options):
         if bare.casefold() == option.strip().casefold():
             return letter  # before the capital-letter rule: "Vitamin C" is an option's text, not letter C
-    if m := re.search(r"\b([A-D])\b", answer):
+    for m in re.finditer(r"\b([A-D])\b", answer):
+        if m.group(1) == "A" and not answer[:m.start()].strip() and re.match(r"\s+[a-z]", answer[m.end():]):
+            continue  # "A cell divides…": the article that starts a sentence, not option A
         return m.group(1)
     return None
 
