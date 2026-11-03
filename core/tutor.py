@@ -9,8 +9,11 @@ from datetime import date, timedelta
 from typing import Literal, Optional
 
 from pydantic import BaseModel
+from sqlmodel import select
 
+from core import concepts, query
 from core.db import ConceptMastery, QuizAttempt, session
+from core.retrieval import get_retriever, relevant
 
 SESSION_SIZE = 5
 QUALITY = {"correct": 5, "partial": 3, "wrong": 1}
@@ -26,6 +29,40 @@ class Question(BaseModel):
     concept: str
     chunk_id: int
     citation: dict
+
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+
+async def pick_targets(topic_id: Optional[str], about: Optional[str] = None, review: bool = False,
+                       n: int = SESSION_SIZE, today: Optional[date] = None) -> list[tuple[str, int]]:
+    """(concept, chunk_id) pairs to quiz on.
+
+    Quiz: concepts of the passages retrieved for `about` (else the topic name), in rank order.
+    Review: concepts that are due or were last answered wrong / partly, weakest first; [] if none.
+    """
+    if review:
+        today_s = (today or date.today()).isoformat()
+        with session() as s:
+            rows = s.exec(select(ConceptMastery).where(
+                (ConceptMastery.next_review <= today_s) | ConceptMastery.last_verdict.in_(["wrong", "partial"]))).all()
+        targets = []
+        for row in sorted(rows, key=lambda r: (r.next_review, r.ease, -r.wrong, r.concept)):
+            if chunks := concepts.chunks_for_concept(row.concept, topic_id):
+                targets.append((row.concept, chunks[0]))
+        return targets[:n]
+
+    q = about or (query._topic_name(topic_id) if topic_id else "overview")
+    hits = relevant(await get_retriever(rewrite=False).retrieve(q, topic_id, k=12))
+    tags = concepts.chunk_concepts([h.chunk_id for h in hits])
+    targets, seen = [], set()
+    for h in hits:
+        for c in tags.get(h.chunk_id, []):
+            if c not in seen:
+                seen.add(c)
+                targets.append((c, h.chunk_id))
+    return targets[:n]
 
 
 # ---------------------------------------------------------------------------

@@ -52,3 +52,65 @@ def test_record_writes_attempt_and_mastery():
     assert [(a.verdict, a.answer, a.kind, a.chunk_id) for a in attempts] == [
         ("correct", "it speeds reactions", "short", 1), ("wrong", "no idea", "short", 1), (None, "???", "short", 1)]
     assert (m.attempts, m.wrong, m.last_verdict, m.interval_days) == (2, 1, "wrong", 1)
+
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+
+def _mastery(concept, verdict, ease, next_review, wrong=0):
+    with session() as s:
+        s.add(ConceptMastery(concept=concept, last_verdict=verdict, ease=ease, next_review=next_review.isoformat(),
+                             attempts=1, wrong=wrong))
+        s.commit()
+
+
+@pytest.mark.asyncio
+async def test_quiz_targets_from_retrieved_chunks():
+    from core import concepts
+    from tests.planting import plant
+
+    tid, ids = plant(
+        ["Enzymes bind substrates at the active site.", "Enzyme activity falls when an inhibitor binds.",
+         "Glucose is broken down in glycolysis."],
+        {0: [("Enzyme", "binds", "Substrate")], 1: [("Enzyme", "blocked by", "Inhibitor")],
+         2: [("Glucose", "broken down in", "Glycolysis")]})
+    targets = await tutor.pick_targets(tid, about="enzyme", n=5)
+    names = [c for c, _ in targets]
+    assert len(names) == len(set(names)) <= 5 and names.count("enzyme") == 1  # distinct by concept
+    assert all(cid in concepts.chunks_for_concept(c) for c, cid in targets)
+    assert names[0] == "enzyme"  # the best-ranked chunk mentions "enzyme"
+
+
+@pytest.mark.asyncio
+async def test_review_targets_only_weak_or_due_in_order():
+    from tests.planting import plant
+
+    tid, ids = plant(["a", "b", "c", "d"], {0: [("Alpha", "r", "x0")], 1: [("Beta", "r", "x1")],
+                                            2: [("Gamma", "r", "x2")], 3: [("Delta", "r", "x3")]})
+    tomorrow = TODAY + timedelta(1)
+    _mastery("alpha", "wrong", 1.96, tomorrow, wrong=1)
+    _mastery("beta", "partial", 2.36, tomorrow, wrong=1)
+    _mastery("gamma", "correct", 2.6, tomorrow)
+    _mastery("delta", "correct", 2.6, TODAY)  # due today
+    assert await tutor.pick_targets(tid, review=True, today=TODAY) == [("delta", ids[3]), ("alpha", ids[0]), ("beta", ids[1])]
+
+
+@pytest.mark.asyncio
+async def test_review_respects_topic():
+    from tests.planting import plant
+
+    plant(["a"], {0: [("Alpha", "r", "x0")]}, topic="Topic X")
+    other, _ = plant(["b"], {0: [("Beta", "r", "x1")]}, topic="Topic Y")
+    _mastery("alpha", "wrong", 1.96, TODAY + timedelta(1), wrong=1)
+    assert await tutor.pick_targets(other, review=True, today=TODAY) == []
+    assert [c for c, _ in await tutor.pick_targets(None, review=True, today=TODAY)] == ["alpha"]
+
+
+@pytest.mark.asyncio
+async def test_review_empty_when_nothing_due():
+    from tests.planting import plant
+
+    tid, _ = plant(["a"], {0: [("Alpha", "r", "x0")]})
+    _mastery("alpha", "correct", 2.6, TODAY + timedelta(6))
+    assert await tutor.pick_targets(tid, review=True, today=TODAY) == []
