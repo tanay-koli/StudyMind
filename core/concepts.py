@@ -9,7 +9,9 @@ import asyncio
 import contextlib
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
+from typing import Optional
 
 from sqlmodel import select
 
@@ -131,6 +133,26 @@ def shared_concepts(chunks_a: list[int], chunks_b: list[int], exclude: set[str])
             out.append((f, pair))
     out.sort(key=lambda x: (-len(x[0]["chunks"]), x[0]["name"]))
     return [Shared(f["name"], len(f["chunks"]), ea, eb) for f, (ea, eb) in out[:TOP_SHARED]]
+
+
+def chunk_concepts(chunk_ids: list[int]) -> dict[int, list[str]]:
+    """Up to 3 normalised concepts per chunk, most mentioned first (ties: first seen); chunks without edges absent."""
+    with session() as s:
+        edges = s.exec(select(ConceptEdge).where(ConceptEdge.chunk_id.in_(chunk_ids)).order_by(ConceptEdge.id)).all()
+    counts: dict[int, Counter] = {}
+    for e in edges:
+        counts.setdefault(e.chunk_id, Counter()).update([e.head_norm, e.tail_norm])
+    return {cid: [c for c, _ in counter.most_common(3)] for cid, counter in counts.items()}
+
+
+def chunks_for_concept(concept: str, topic_id: Optional[str] = None) -> list[int]:
+    """Chunks whose edges mention the concept, the most mentions first."""
+    q = select(ConceptEdge).where((ConceptEdge.head_norm == concept) | (ConceptEdge.tail_norm == concept))
+    if topic_id:
+        q = q.where(ConceptEdge.topic_id == topic_id)
+    with session() as s:
+        edges = s.exec(q.order_by(ConceptEdge.id)).all()
+    return [cid for cid, _ in Counter(e.chunk_id for e in edges).most_common()]
 
 
 def pending_count(chunk_ids: list[int]) -> int:
