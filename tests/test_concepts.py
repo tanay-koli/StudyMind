@@ -195,3 +195,27 @@ async def test_stop_cancels_cleanly():
     await asyncio.sleep(0.05)
     await concepts.stop()
     await concepts.stop()
+
+
+def test_chunk_concepts_top_three_by_frequency():
+    from tests.planting import plant
+
+    _, ids = plant(["c0", "c1", "c2"], {
+        0: [("Enzyme", "binds", "Substrate"), ("Enzyme", "has", "Active site"), ("Enzymes", "blocked by", "Inhibitor"),
+            ("Rate", "depends on", "Temperature")],
+        1: [("Rate", "rises with", "Temperature")],
+    })
+    got = concepts.chunk_concepts(ids)
+    assert got == {ids[0]: ["enzyme", "substrate", "active site"], ids[1]: ["rate", "temperature"]}
+
+
+def test_chunks_for_concept_orders_by_mentions_and_topic():
+    from tests.planting import plant
+
+    tid, ids = plant(["c0", "c1"], {
+        0: [("ATP", "made by", "Mitochondria")],
+        1: [("ATP", "powers", "Pump"), ("Pump", "uses", "ATP"), ("ATP", "stores", "Energy")],
+    })
+    assert concepts.chunks_for_concept("atp") == [ids[1], ids[0]]
+    assert concepts.chunks_for_concept("atp", tid) == [ids[1], ids[0]]
+    assert concepts.chunks_for_concept("atp", "other_topic") == []

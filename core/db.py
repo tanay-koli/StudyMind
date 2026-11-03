@@ -86,6 +86,40 @@ class PendingFigure(SQLModel, table=True):
     attempts: int = 0
 
 
+class QuizAttempt(SQLModel, table=True):
+    # Every answer the learner gives; kept when sources are deleted (it describes the learner)
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Optional[int] = Field(default=None, primary_key=True)
+    topic_id: Optional[str] = Field(default=None, index=True)
+    concept: str = Field(index=True)  # normalised, as in concept_edge
+    chunk_id: Optional[int] = None
+    kind: str  # mcq | short
+    question: str
+    answer: str
+    verdict: Optional[str] = None  # correct | partial | wrong | None (ungraded)
+    feedback: str = ""
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class ConceptMastery(SQLModel, table=True):
+    # SM-2 state per concept, shared across topics
+    concept: str = Field(primary_key=True)
+    ease: float = 2.5
+    interval_days: int = 0
+    repetitions: int = 0
+    next_review: str  # ISO date
+    last_verdict: Optional[str] = None
+    attempts: int = 0
+    wrong: int = 0  # wrong + partial answers
+
+
+class LearnerFact(SQLModel, table=True):
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Optional[int] = Field(default=None, primary_key=True)
+    fact: str
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
 _engine: Engine | None = None
 
 

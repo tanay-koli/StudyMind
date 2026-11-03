@@ -7,6 +7,7 @@ Docs: http://localhost:8000/docs
 
 import asyncio
 import json
+from datetime import date
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,8 +17,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core import agent, concepts, config, ingest, query, retrieval, topics
-from core.db import ChunkMedia, session
+from sqlmodel import select
+
+from core import agent, concepts, config, ingest, memory, query, retrieval, topics
+from core.db import ChunkMedia, ConceptMastery, session
 from core.config import DATA_DIR, check_llm, http_client, set_http_client, settings
 from core.llm import setup_tracing
 
@@ -200,6 +203,34 @@ async def ingest_url(body: UrlIn):
 async def ingest_text(body: TextIn):
     _require_topic(body.topic_id)
     return await ingest.ingest_text(body.text, title=body.title, topic_id=body.topic_id)
+
+
+# ---------------------------------------------------------------------------
+# Learner
+# ---------------------------------------------------------------------------
+
+@app.get("/learner")
+def learner():
+    """Remembered facts, and concept mastery in the order a review would pick it.
+
+    Concepts whose material was deleted are left out: review can't ask them, so the panel shouldn't list them.
+    """
+    with session() as s:
+        rows = s.exec(select(ConceptMastery)).all()
+    rows = sorted((r for r in rows if concepts.chunks_for_concept(r.concept)),
+                  key=lambda r: (r.next_review, r.ease, -r.wrong, r.concept))
+    today = date.today().isoformat()
+    return {"facts": [f.model_dump() for f in memory.facts()],
+            "mastery": [r.model_dump() for r in rows],
+            # the review rule: due today, or last answered wrong / partly right
+            "to_review": sum(r.next_review <= today or r.last_verdict in ("wrong", "partial") for r in rows)}
+
+
+@app.delete("/learner/facts/{fact_id}")
+def delete_fact(fact_id: int):
+    if not memory.delete(fact_id):
+        raise HTTPException(404, "Fact not found")
+    return {"status": "success"}
 
 
 # ---------------------------------------------------------------------------

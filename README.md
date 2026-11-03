@@ -13,6 +13,7 @@
 | **📚 Topics (Notebooks)** | Group your ingested resources into collections (e.g. "ML Course", "DSA Prep") with custom color tags. |
 | **📥 Multi-Source Ingest** | Upload PDFs, YouTube transcripts, web articles, or paste your own notes. PDFs keep page numbers and section headings. |
 | **🖼️ Figures, tables, video times** | Diagrams in PDFs are captioned by a local vision model and cited with the image inline; tables stay searchable as Markdown; YouTube answers cite `@ 12:34` with a link to that moment. |
+| **🧠 Quizzes and spaced review** | "Quiz me on …" asks questions from your material and grades your answers; SM-2 schedules each concept, and "review" asks exactly what you got wrong or what is due. It also remembers facts you tell it (exam date, preferred style). |
 | **💡 AI Topic Suggestions** | Suggests which topic new material belongs to via a toast/banner confirmation. |
 | **🤖 Study Agent** | One chat that routes each message (answer, explain, connect topics), rewrites and retries weak searches, and checks its answer against the cited passages. You watch each step as it happens. |
 | **💬 Scoped Q&A with citations** | Ask within one topic or across all; answers cite passages as `[n]` and show clickable chips like `📄 notes.pdf · p.12`. |
@@ -65,6 +66,8 @@ StudyMind/
 │   ├── rewrite.py         # Query rewriting (multi-query, HyDE) around the retriever
 │   ├── concepts.py        # Concept triples (background worker) and topic overlap
 │   ├── figures.py         # Figure crops captioned by the vision model (same worker)
+│   ├── tutor.py           # Quiz questions, grading, SM-2 scheduling per concept
+│   ├── memory.py          # Facts about the learner (ADD/UPDATE/DELETE), fed to the tutor
 │   ├── agent.py           # LangGraph agent: routing, retry on weak search, self-check
 │   ├── studyguide.py      # Map-reduce study guide over every section
 │   ├── topics.py          # Topic + source CRUD, suggestion, study guide, audio overview
@@ -171,7 +174,11 @@ In the **🤖 Agent** tab, just ask. The sidebar topic scopes the search.
 - A step list shows what it is doing: searching → checking sources → (rewriting query → searching) → answering → verifying.
 - If the passages it finds score too low, it rewrites the search (at most twice), then says honestly that the material does not cover it.
 - If its answer contains a sentence the passages do not support, it rewrites the answer once, then shows a warning naming the sentence.
-- Pick two topics under **Connect with…**, or ask "connect X with Y", for a topic map. "Quiz me" and "review" arrive in Phase 5.
+- Pick two topics under **Connect with…**, or ask "connect X with Y", for a topic map.
+- **"quiz me"** or **"quiz me on enzymes"** starts a 5-question quiz from your material (the sidebar topic scopes it). Answer each question in the next message: a letter for multiple choice, a sentence for short answers. Each answer is graded from the source passage and schedules that concept with SM-2.
+- **"review"** asks only about concepts you got wrong or partly right, or that are due today, weakest first. **"stop"** ends a quiz.
+- Tell it about yourself ("my exam is on 12 Dec", "I prefer short examples") and it remembers; the sidebar's **📈 Your progress** shows what is due and what it remembers, with 🗑 to forget a fact.
+- Quiz attempts and mastery describe you, not the material: deleting a source does not delete them.
 - Conversations are kept in `data/agent.db`; **🆕 New conversation** starts a fresh one.
 
 ### 4. Ask Questions

@@ -223,8 +223,12 @@ def test_agent_error_event_then_next_turn_works(client, monkeypatch):
     monkeypatch.setattr(agent, "search_material", boom)
     ev = _events(client.post("/agent", json={"message": "q", "thread_id": "y"}))
     assert ev[-1] == {"event": "error", "error": "RuntimeError: ollama down"}
-    ev = _events(client.post("/agent", json={"message": "quiz me", "thread_id": "y"}))
-    assert ev[-1]["event"] == "done" and ev[-1]["answer"] == agent.DEFERRED
+    async def fake_connect(a, b):
+        return {"summary": f"{a}~{b}"}
+
+    monkeypatch.setattr(agent.query, "connect_topics", fake_connect)
+    ev = _events(client.post("/agent", json={"message": "connect cells with tissues", "thread_id": "y"}))
+    assert ev[-1]["event"] == "done" and ev[-1]["answer"] == "cells~tissues"
 
 
 def test_agent_history_unknown_thread_is_empty(client):
@@ -247,3 +251,38 @@ def test_figure_endpoint(client, tmp_path):
     assert client.get("/figures/9999").status_code == 404
     img.unlink()
     assert client.get(f"/figures/{fig_id}").status_code == 404
+
+
+def test_learner_endpoint_orders_mastery_and_counts_due(client):
+    from datetime import date, timedelta
+    from core.db import ConceptMastery, LearnerFact
+    from tests.planting import plant
+
+    plant(["a", "b", "c", "d"], {i: [(n, "is", n)] for i, n in enumerate(["alpha", "beta", "gamma", "delta"])})
+    today, tomorrow = date.today().isoformat(), (date.today() + timedelta(1)).isoformat()
+    with session() as s:
+        s.add_all([ConceptMastery(concept="gamma", ease=2.6, next_review=tomorrow, last_verdict="correct", attempts=1),
+                   ConceptMastery(concept="beta", ease=2.36, next_review=tomorrow, last_verdict="partial", attempts=1, wrong=1),
+                   ConceptMastery(concept="alpha", ease=1.96, next_review=tomorrow, last_verdict="wrong", attempts=1, wrong=1),
+                   ConceptMastery(concept="delta", ease=2.6, next_review=today, last_verdict="correct", attempts=2),
+                   # its source was deleted: review can't ask it, so the panel must not list it
+                   ConceptMastery(concept="orphan", ease=1.3, next_review=today, last_verdict="wrong", attempts=3, wrong=3),
+                   LearnerFact(fact="Exam on 12 Dec")])
+        s.commit()
+    body = client.get("/learner").json()
+    assert [m["concept"] for m in body["mastery"]] == ["delta", "alpha", "beta", "gamma"]
+    # the review rule: due today, or last answered wrong / partly right
+    assert body["to_review"] == 3 and [f["fact"] for f in body["facts"]] == ["Exam on 12 Dec"]
+    assert set(body["mastery"][0]) >= {"concept", "ease", "interval_days", "next_review", "last_verdict", "attempts", "wrong"}
+
+
+def test_delete_fact(client):
+    from core.db import LearnerFact
+
+    with session() as s:
+        s.add(LearnerFact(fact="Prefers diagrams"))
+        s.commit()
+    fid = client.get("/learner").json()["facts"][0]["id"]
+    assert client.delete(f"/learner/facts/{fid}").status_code == 200
+    assert client.delete(f"/learner/facts/{fid}").status_code == 404
+    assert client.get("/learner").json()["facts"] == []
