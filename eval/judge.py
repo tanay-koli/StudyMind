@@ -77,23 +77,25 @@ async def judge_file(result_path: Path, dataset: dict[str, dict], cache_path: Pa
     doc = json.loads(result_path.read_text(encoding="utf-8"))
     cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
     judged = failures = 0
-    for row in doc["rows"]:
-        scores = {"faithfulness": None, "correctness": None}
-        tried = []
-        if not row["error"] and not row["refused"]:
-            tried.append("faithfulness")
-            scores["faithfulness"] = await faithfulness(context_text(row["hits"]), row["answer"], cache)
-        if not row["error"] and row["type"] != "unanswerable":
-            tried.append("correctness")
-            gold = dataset[row["id"]]["gold_answer"]
-            scores["correctness"] = await correctness(row["question"], gold, row["answer"], cache)
-        if tried:
-            judged += 1
-            failures += any(scores[m] is None for m in tried)
-        row["judge"] = scores
-    result_path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    try:  # a crash (Ctrl-C, Ollama down) keeps every verdict already paid for
+        for row in doc["rows"]:
+            scores = {"faithfulness": None, "correctness": None}
+            tried = []
+            if not row["error"] and not row["refused"]:
+                tried.append("faithfulness")
+                scores["faithfulness"] = await faithfulness(context_text(row["hits"]), row["answer"], cache)
+            if not row["error"] and row["type"] != "unanswerable":
+                tried.append("correctness")
+                gold = dataset[row["id"]]["gold_answer"]
+                scores["correctness"] = await correctness(row["question"], gold, row["answer"], cache)
+            if tried:
+                judged += 1
+                failures += any(scores[m] is None for m in tried)
+            row["judge"] = scores
+    finally:
+        result_path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
     return {"judged": judged, "failures": failures}
 
 

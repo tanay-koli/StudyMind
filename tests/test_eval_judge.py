@@ -120,3 +120,16 @@ async def test_refused_answerable_row_is_not_a_judge_failure(tmp_path, judge_rep
     p.write_text(json.dumps({"rows": [_row("q1", "This isn't in your material.", True)]}), encoding="utf-8")
     judge_replies([{"verdict": "wrong"}])
     assert await judge.judge_file(p, DATASET, tmp_path / "c.json") == {"judged": 1, "failures": 0}
+
+
+@pytest.mark.asyncio
+async def test_judge_progress_survives_a_crash(tmp_path, judge_replies, result_file):
+    judge_replies([{"claims": []}, {"verdict": "correct"}, ConnectionError("ollama down")])
+    p = tmp_path / "E.json"
+    doc = json.loads(result_file.read_text(encoding="utf-8"))
+    doc["rows"].append(_row("q3", "Heaps are binary trees [1].", False))
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    with pytest.raises(ConnectionError):
+        await judge.judge_file(p, {**DATASET, "q3": DATASET["q1"]}, tmp_path / "cache.json")
+    assert len(json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))) == 2
+    assert json.loads(p.read_text(encoding="utf-8"))["rows"][0]["judge"] == {"faithfulness": 1.0, "correctness": 1.0}
