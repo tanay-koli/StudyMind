@@ -14,7 +14,7 @@ from sqlmodel import delete, select
 
 from core import config, retrieval
 from core.config import check_llm, settings
-from core.db import PendingFigure, session
+from core.db import PendingFigure, Source, session
 from core.llm import llm
 from core.parse import Block, FigureCrop
 
@@ -39,6 +39,9 @@ def queue(source_id: int, topic_id: str, crops: list[FigureCrop], blocks: list[B
     """Save the crops as PNGs and PendingFigure rows; returns how many were queued."""
     if not crops:
         return 0
+    with session() as s:
+        if s.get(Source, source_id) is None:  # deleted while the PDF was still being ingested
+            return 0
     folder = config.FIGURE_DIR / str(source_id)
     folder.mkdir(parents=True, exist_ok=True)
     rows = []

@@ -212,3 +212,20 @@ async def test_ingest_finds_tables_once_per_page(tmp_path, monkeypatch):
     result = await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
     assert result["figures_queued"] == 2
     assert sorted(calls) == [0, 1]  # both pages have drawings; each is searched once
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_during_upload_queues_no_figures(tmp_path, vision, monkeypatch):
+    from core import ingest
+
+    real = ingest.extract_figures
+
+    def delete_then_extract(path, tables=None):
+        topics.delete_source(topics.list_sources()[0]["id"])  # the user deletes the PDF mid-upload
+        return real(path, tables)
+
+    monkeypatch.setattr(ingest, "extract_figures", delete_then_extract)
+    await ingest_pdf(str(figure_pdf(tmp_path / "f.pdf")))
+    assert _pending() == []
+    await figures.caption_pending()
+    assert _chunks() == []

@@ -247,7 +247,8 @@ async def summarize_topic(topic: str) -> dict:
     """
     result: dict = {"summary": "", "sources_referenced": [], "citations": [], "error": None}
     try:
-        hits = await get_retriever().retrieve(topic, None, k=8)
+        # Unrelated material still returns its 8 nearest passages: summarising those would invent an answer
+        hits = relevant(await get_retriever().retrieve(topic, None, k=8))
         if not hits:
             result["summary"] = (
                 f"No information found about '{topic}'. "

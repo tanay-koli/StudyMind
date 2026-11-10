@@ -276,3 +276,11 @@ def test_context_labels_media_and_citations_carry_it():
         ("figure", "/figures/1", None), ("table", None, None), ("video", None, "https://youtu.be/abc?t=754"),
         ("text", None, None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_summarize_unrelated_topic_skips_llm(fake, monkeypatch):
+    monkeypatch.setattr(query.settings, "retriever", "hybrid")
+    _, prompts = fake({None: [Hit(1, 1, "Bio", 1, None, "enzymes speed reactions", -9.0)]}, reply="Made up [1]")
+    res = await query.summarize_topic("French Revolution")
+    assert prompts == [] and "No information found" in res["summary"]
