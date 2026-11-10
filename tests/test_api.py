@@ -286,3 +286,15 @@ def test_delete_fact(client):
     assert client.delete(f"/learner/facts/{fid}").status_code == 200
     assert client.delete(f"/learner/facts/{fid}").status_code == 404
     assert client.get("/learner").json()["facts"] == []
+
+
+def test_audio_does_not_speak_a_failure_message(client, monkeypatch):
+    spoken = []
+    monkeypatch.setattr(topics, "synthesize_audio", lambda tid, script: spoken.append(script))
+    client.post("/ingest/text", json={"text": "Self-attention weighs tokens", "title": "L1", "topic_id": "general"})
+
+    async def down(*a, **kw):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(topics.llm, "complete", down)
+    assert client.post("/topics/general/audio").status_code == 503 and spoken == []

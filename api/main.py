@@ -156,6 +156,9 @@ async def audio_script(topic_id: str, force: bool = False):
 async def audio(topic_id: str):
     _require_topic(topic_id)
     script = await topics.generate_audio_script(topic_id)
+    # Only a generated script is cached on the topic; anything else is a "no material / LLM down" notice
+    if not topics.load_topics()[topic_id].get("audio_script"):
+        raise HTTPException(503, "No audio script: add material to this topic and check the LLM is running")
     path = await asyncio.to_thread(topics.synthesize_audio, topic_id, script)
     if path is None:
         raise HTTPException(503, "Audio synthesis unavailable (is pyttsx3 installed?)")
