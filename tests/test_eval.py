@@ -60,3 +60,14 @@ def test_configs_ladder():
     assert C["B"]["corpus"] == "fixed" and C["D"]["rerank"] is False
     assert C["G"]["figures"] is True and C["H"]["agent"] is True
     assert all(C[n]["figures"] is False for n in ("B", "C", "D", "E", "F-multi", "F-hyde", "E-nomic"))
+
+
+def test_open_corpus_isolates_every_data_path(tmp_path, keep_settings, monkeypatch):
+    from core import config
+
+    monkeypatch.setattr(configs, "CORPUS_ROOT", tmp_path / "eval")
+    monkeypatch.setattr(config, "FIGURE_DIR", config.FIGURE_DIR)
+    configs.open_corpus("structure")
+    root = (tmp_path / "eval" / "structure").as_posix()
+    paths = [settings.database_url, settings.qdrant_path, settings.agent_db_path, config.FIGURE_DIR.as_posix()]
+    assert all(root in p for p in paths) and settings.chunker == "structure"

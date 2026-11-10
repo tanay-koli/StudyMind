@@ -5,7 +5,7 @@ corpus picks the ingested copy (the chunker runs at ingest time); agent=True ans
 the LangGraph agent instead of the plain RAG prompt. Every other key is a settings override.
 """
 
-from core import db, retrieval
+from core import config, db, retrieval
 from core.config import DATA_DIR, settings
 from core.topics import init_db
 
@@ -40,6 +40,7 @@ def open_corpus(corpus: str) -> None:
     settings.qdrant_path = (root / "qdrant").as_posix()
     settings.agent_db_path = (root / "agent.db").as_posix()
     settings.chunker = corpus
+    config.FIGURE_DIR = root / "figures"  # crops too: app source ids overlap eval ones
     db.reset_engine()
     retrieval.reset_store()
     init_db()
