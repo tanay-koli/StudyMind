@@ -262,3 +262,20 @@ def test_move_source_moves_pending_figures():
     topics.move_source(sid, b)
     with db.session() as s:
         assert s.exec(select(db.PendingFigure.topic_id)).all() == [b]
+
+
+def test_failed_delete_keeps_the_source_searchable(monkeypatch):
+    from sqlmodel import Session
+
+    from core.parse import Block
+
+    sid = topics.add_source("general", "note", "Doc")["id"]
+    retrieval.index_chunks(sid, "general", [Block(1, None, "alpha")])
+
+    def locked(self):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(Session, "commit", locked)
+    with pytest.raises(RuntimeError):
+        topics.delete_source(sid)
+    assert retrieval.store().count(retrieval.collection_name()).count == 1

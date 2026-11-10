@@ -144,10 +144,12 @@ def delete_topic(topic_id: str) -> bool:
         topic = s.get(Topic, topic_id)
         if topic is None:
             return False
-        _purge(s, s.exec(select(Source.id).where(Source.topic_id == topic_id)).all())
+        source_ids = s.exec(select(Source.id).where(Source.topic_id == topic_id)).all()
+        _purge(s, source_ids)
         s.exec(delete(Source).where(Source.topic_id == topic_id))
         s.delete(topic)
         s.commit()
+    _forget(source_ids)
     return True
 
 
@@ -161,16 +163,19 @@ def invalidate_caches(topic_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _purge(s, source_ids: list[int]) -> None:
-    """Delete the sources' Qdrant points, chunk rows, figure rows and crop files (caller commits)."""
-    retrieval.delete_source_points(list(source_ids))
+    """Delete the sources' chunk and figure rows (caller commits, then calls _forget)."""
     chunk_ids = s.exec(select(Chunk.id).where(Chunk.source_id.in_(source_ids))).all()
     s.exec(delete(ConceptEdge).where(ConceptEdge.chunk_id.in_(chunk_ids)))
     s.exec(delete(ConceptExtraction).where(ConceptExtraction.chunk_id.in_(chunk_ids)))
     s.exec(delete(ChunkMedia).where(ChunkMedia.chunk_id.in_(chunk_ids)))
     s.exec(delete(PendingFigure).where(PendingFigure.source_id.in_(source_ids)))
     s.exec(delete(Chunk).where(Chunk.source_id.in_(source_ids)))
+
+
+def _forget(source_ids: list[int]) -> None:
+    """After the commit: a failed commit must leave the sources searchable and their crops on disk."""
+    retrieval.delete_source_points(list(source_ids))
     for sid in source_ids:
-        # A crop folder left behind by a failed commit only costs disk; the endpoint 404s on missing files
         shutil.rmtree(config.FIGURE_DIR / str(sid), ignore_errors=True)
 
 
@@ -221,6 +226,7 @@ def delete_source(source_id: int) -> Optional[dict]:
         _purge(s, [source_id])
         s.delete(src)
         s.commit()
+    _forget([source_id])
     invalidate_caches(src.topic_id)
     return src.model_dump()
 
@@ -233,6 +239,7 @@ def delete_all_sources() -> int:
         _purge(s, source_ids)
         s.exec(delete(Source))
         s.commit()
+    _forget(source_ids)
     for tid in topic_ids:
         invalidate_caches(tid)
     return count
