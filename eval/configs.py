@@ -25,7 +25,8 @@ CONFIGS: dict[str, dict] = {
     "F-hyde": {**_E, "change": "+ HyDE rewriting", "query_rewrite": "hyde"},
 }
 CONFIGS["G"] = {**CONFIGS[BEST_F], "change": "+ figure captions (multimodal)", "figures": True}
-CONFIGS["H"] = {**CONFIGS["G"], "change": "+ agent grade-and-retry + self-check", "agent": True}
+CONFIGS["H"] = {**CONFIGS["G"], "change": "+ agent grade-and-retry + self-check (its own query rewrite replaces F's)",
+                  "agent": True}
 CONFIGS["E-nomic"] = {**_E, "change": "E with nomic-embed instead of bge-small", "embed_model": "nomic"}
 ORDER = list(CONFIGS)
 

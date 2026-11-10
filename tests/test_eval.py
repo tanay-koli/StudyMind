@@ -71,3 +71,8 @@ def test_open_corpus_isolates_every_data_path(tmp_path, keep_settings, monkeypat
     root = (tmp_path / "eval" / "structure").as_posix()
     paths = [settings.database_url, settings.qdrant_path, settings.agent_db_path, config.FIGURE_DIR.as_posix()]
     assert all(root in p for p in paths) and settings.chunker == "structure"
+
+
+def test_h_label_says_the_agent_replaces_query_rewriting():
+    # the agent searches with get_retriever(rewrite=False), so H drops G's multi-query / HyDE
+    assert "own query rewrite" in configs.CONFIGS["H"]["change"]
