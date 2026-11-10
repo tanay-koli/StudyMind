@@ -17,9 +17,6 @@ DATA_DIR.mkdir(exist_ok=True)
 # Figure crops: FIGURE_DIR/<source_id>/p<page>_<n>.png (read as config.FIGURE_DIR, so tests can move it)
 FIGURE_DIR = DATA_DIR / "figures"
 
-# Default dataset name used for all ingestions
-DEFAULT_DATASET = "studymind"
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_PROJECT_ROOT / ".env", extra="ignore")
