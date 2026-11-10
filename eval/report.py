@@ -27,8 +27,12 @@ def _mean(values) -> float | None:
 
 
 def summarise(result: dict, dataset: dict[str, dict]) -> dict:
-    """Metrics over the rows that ran without error; unanswerable rows only count toward refusal."""
-    ok = [r for r in result["rows"] if not r["error"]]
+    """Metrics over the rows that ran without error; unanswerable rows only count toward refusal.
+
+    Rows whose id is no longer in the dataset are stale: counted, never scored.
+    """
+    known = [r for r in result["rows"] if r["id"] in dataset]
+    ok = [r for r in known if not r["error"]]
     gold = {r["id"]: dataset[r["id"]]["gold"] for r in ok}
     kind = {r["id"]: dataset[r["id"]]["type"] for r in ok}
     answerable = [r for r in ok if kind[r["id"]] != "unanswerable"]
@@ -42,9 +46,13 @@ def summarise(result: dict, dataset: dict[str, dict]) -> dict:
         "refusal": _mean(float(r["refused"]) for r in ok if kind[r["id"]] == "unanswerable"),
         "latency": _mean(r["latency_s"] for r in ok),
         "cost": _mean(r["cost_usd"] for r in ok),
-        "errors": len(result["rows"]) - len(ok),
-        "judge_failures": sum((not r["refused"] and judge(r, "faithfulness") is None)
-                              or (r in answerable and judge(r, "correctness") is None) for r in ok),
+        "n": len(known),
+        "stale": len(result["rows"]) - len(known),
+        "errors": len(known) - len(ok),
+        "unjudged": sum("judge" not in r for r in ok),
+        "judge_failures": sum("judge" in r and ((not r["refused"] and judge(r, "faithfulness") is None)
+                                                or (r in answerable and judge(r, "correctness") is None))
+                              for r in ok),
         "diagram": {"recall5": _mean(metrics.recall_at(r["hits"], gold[r["id"]]) for r in diagram),
                     "correctness": _mean(judge(r, "correctness") for r in diagram)},
     }
@@ -87,10 +95,14 @@ def build(results: dict[str, dict], dataset: dict[str, dict], labels: list[dict]
         "| A | Cognee baseline (current app) | not measured (Cognee removed in Phase 1) | | | | | | |",
     ]
     for name, s in stats.items():
-        label = name + (f" (errors: {s['errors']})" if s["errors"] else "")
+        tags = ([f"n={s['n']}/{len(dataset)}"] if s["n"] != len(dataset) else []) +                [f"{k}: {s[k]}" for k in ("stale", "errors") if s[k]]
+        label = name + (f" ({', '.join(tags)})" if tags else "")
         out.append(f"| {label} | {CONFIGS[name]['change']} | {_pct(s['recall5'])} | {_num(s['mrr'], '.2f')} | "
                    f"{_pct(s['faithfulness'])} | {_pct(s['correctness'])} | {_pct(s['refusal'])} | "
                    f"{_num(s['latency'], '.1f')} | {_num(s['cost'], '.4f')} |")
+    unjudged = [n for n, s in stats.items() if s["unjudged"]]
+    if unjudged:
+        out += ["", f"Not judged yet: {', '.join(unjudged)} (run `python -m eval.judge <config>`)"]
     failures = {n: s["judge_failures"] for n, s in stats.items() if s["judge_failures"]}
     if failures:
         out += ["", "Judge failures (unparseable replies, left out of the means): "

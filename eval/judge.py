@@ -81,6 +81,9 @@ async def judge_file(result_path: Path, dataset: dict[str, dict], cache_path: Pa
         for row in doc["rows"]:
             scores = {"faithfulness": None, "correctness": None}
             tried = []
+            if row["id"] not in dataset:  # stale: the question was removed or renumbered since the run
+                row["judge"] = scores
+                continue
             if not row["error"] and not row["refused"]:
                 tried.append("faithfulness")
                 scores["faithfulness"] = await faithfulness(context_text(row["hits"]), row["answer"], cache)

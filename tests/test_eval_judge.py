@@ -133,3 +133,11 @@ async def test_judge_progress_survives_a_crash(tmp_path, judge_replies, result_f
         await judge.judge_file(p, {**DATASET, "q3": DATASET["q1"]}, tmp_path / "cache.json")
     assert len(json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))) == 2
     assert json.loads(p.read_text(encoding="utf-8"))["rows"][0]["judge"] == {"faithfulness": 1.0, "correctness": 1.0}
+
+
+@pytest.mark.asyncio
+async def test_judge_skips_rows_no_longer_in_the_dataset(tmp_path, judge_replies, result_file):
+    judge_replies([{"claims": []}])
+    stats = await judge.judge_file(result_file, {"q2": DATASET["q2"]}, tmp_path / "c.json")
+    rows = json.loads(result_file.read_text(encoding="utf-8"))["rows"]
+    assert rows[0]["judge"] == {"faithfulness": None, "correctness": None} and stats == {"judged": 0, "failures": 0}

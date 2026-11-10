@@ -50,3 +50,19 @@ def test_update_readme_appends_then_replaces_preserving_crlf(tmp_path):
     text = p.read_bytes()
     assert text.startswith(b"# StudyMind\r\n\r\nIntro.\r\n") and text.count(b"<!-- eval:start -->") == 1
     assert b"two" in text and b"one" not in text
+
+
+def test_stale_and_missing_rows_are_flagged_not_fatal(result_E):
+    result_E["rows"] = [result_E["rows"][0], _row("q9", "text")]  # q9 was deleted from the dataset
+    s = report.summarise(result_E, DATASET)
+    assert s["n"] == 1 and s["stale"] == 1 and s["recall5"] == 1.0
+    assert "| E (n=1/3, stale: 1) |" in report.build({"E": result_E}, DATASET, labels=[])
+
+
+def test_unjudged_config_is_not_judge_failures(result_E):
+    for r in result_E["rows"]:
+        r.pop("judge")
+    s = report.summarise(result_E, DATASET)
+    assert s["judge_failures"] == 0 and s["unjudged"] == 2 and s["faithfulness"] is None
+    md = report.build({"E": result_E}, DATASET, labels=[])
+    assert "Not judged yet: E" in md and "Judge failures" not in md
