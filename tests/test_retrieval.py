@@ -296,3 +296,15 @@ async def test_figures_off_drops_figure_hits(monkeypatch, kind):
     monkeypatch.setattr(settings, "figures", False)
     hits = await retrieval.base_retriever().retrieve("heap insert diagram", "general")
     assert hits and not any((h.media or {}).get("kind") == "figure" for h in hits)
+
+
+def test_chunk_ids_are_not_reused_after_a_delete():
+    # old chats link figures by chunk id; a reused id would show another source's content
+    sid = _src()
+    retrieval.index_chunks(sid, "general", [Block(1, None, "alpha")])
+    with session() as s:
+        old = s.exec(select(Chunk.id)).one()
+    topics.delete_source(sid)
+    retrieval.index_chunks(_src(), "general", [Block(1, None, "beta")])
+    with session() as s:
+        assert s.exec(select(Chunk.id)).one() > old

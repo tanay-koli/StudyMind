@@ -34,7 +34,9 @@ class Source(SQLModel, table=True):
 
 
 class Chunk(SQLModel, table=True):
-    # Also the Qdrant point id
+    # Also the Qdrant point id. Never reused, so old citations can't point at new content;
+    # shortcut: create_all applies this to new databases only, re-create data/studymind.db to get it
+    __table_args__ = {"sqlite_autoincrement": True}
     id: Optional[int] = Field(default=None, primary_key=True)
     source_id: int = Field(foreign_key="source.id", index=True)
     topic_id: str = Field(index=True)
