@@ -415,14 +415,18 @@ with st.sidebar:
                 with st.spinner("Generating audio script..."):
                     script_content = api("POST", f"/topics/{aud_tid}/audio-script")["script"]
 
-                # Synthesize (503 when pyttsx3 is unavailable)
-                with st.spinner("Synthesizing audio file..."):
-                    audio_resp = httpx.post(f"{settings.api_url}/topics/{aud_tid}/audio", timeout=300)
+                # Synthesize once per script: every widget click reruns this page
+                wav_key = (aud_tid, script_content)
+                if st.session_state.get("audio_wav", (None, None))[0] != wav_key:
+                    with st.spinner("Synthesizing audio file..."):
+                        audio_resp = httpx.post(f"{settings.api_url}/topics/{aud_tid}/audio", timeout=300)
+                    ok = audio_resp.status_code == 200
+                    st.session_state.audio_wav = (wav_key, audio_resp.content if ok else None)
 
-                if audio_resp.status_code == 200:
-                    st.audio(audio_resp.content, format="audio/wav")
+                if wav := st.session_state.audio_wav[1]:
+                    st.audio(wav, format="audio/wav")
                 else:
-                    st.info("Install pyttsx3 for audio playback. Displaying script text only.")
+                    st.info("Audio unavailable (no script yet, or pyttsx3 not installed). Showing the script text only.")
 
                 st.markdown("**Podcast Transcript:**")
                 st.caption(script_content)
