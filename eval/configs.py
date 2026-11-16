@@ -5,11 +5,15 @@ corpus picks the ingested copy (the chunker runs at ingest time); agent=True ans
 the LangGraph agent instead of the plain RAG prompt. Every other key is a settings override.
 """
 
+import os
+from pathlib import Path
+
 from core import config, db, retrieval
 from core.config import DATA_DIR, settings
 from core.topics import init_db
 
-CORPUS_ROOT = DATA_DIR / "eval"
+# env override lets a baseline check build a scratch corpus without touching data/eval
+CORPUS_ROOT = Path(os.environ.get("EVAL_CORPUS_ROOT") or DATA_DIR / "eval")
 
 # Edit after F-multi and F-hyde have run: the one with the higher Recall@5 (tie -> F-multi)
 BEST_F = "F-hyde"

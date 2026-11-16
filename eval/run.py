@@ -2,8 +2,8 @@
 StudyMind — Eval runner: answer every dataset question under one named config and record
 hits, answer, refusal, latency and LLM usage. Metrics are computed later by eval.report.
 
-Usage: python -m eval.run --config <name> [--limit N] [--dataset PATH]
-Writes eval/results/<name>.json.
+Usage: python -m eval.run --config <name> [--limit N] [--dataset PATH] [--retrieval-only] [--out DIR]
+Writes <out>/<name>.json (default eval/results).
 """
 
 import argparse
@@ -35,9 +35,9 @@ def _hit_record(h: dict) -> dict:
             "kind": (h.get("media") or {}).get("kind", "text"), "score": h["score"], "text": h["text"]}
 
 
-async def _plain(row: dict) -> tuple[list[dict], str]:
+async def _plain(row: dict, retrieval_only: bool = False) -> tuple[list[dict], str]:
     hits = await retrieval.get_retriever().retrieve(row["question"], row.get("topic_id"))
-    answer = (await _generate(row["question"], hits))[0] if hits else ""
+    answer = (await _generate(row["question"], hits))[0] if hits and not retrieval_only else ""
     return [dataclasses.asdict(h) for h in hits], answer
 
 
@@ -52,12 +52,12 @@ async def _agent(row: dict, name: str) -> tuple[list[dict], str]:
     return state.get("documents") or [], state.get("answer", "")
 
 
-async def _row(row: dict, name: str, cfg: dict) -> dict:
+async def _row(row: dict, name: str, cfg: dict, retrieval_only: bool = False) -> dict:
     before = dict(llm.usage)
     start = time.perf_counter()
     hits, answer, error = [], "", None
     try:
-        hits, answer = await (_agent(row, name) if cfg["agent"] else _plain(row))
+        hits, answer = await (_agent(row, name) if cfg["agent"] else _plain(row, retrieval_only))
     except Exception as exc:  # one failed question must not lose the run
         error = f"{type(exc).__name__}: {exc}"
     return {
@@ -74,7 +74,8 @@ def _git_sha() -> str:
                           cwd=EVAL_DIR).stdout.strip()
 
 
-async def run(name: str, dataset: Path, out_dir: Path, limit: int | None = None, corpus: bool = True) -> Path:
+async def run(name: str, dataset: Path, out_dir: Path, limit: int | None = None, corpus: bool = True,
+              retrieval_only: bool = False) -> Path:
     cfg = configs.CONFIGS[name]
     if corpus:
         configs.open_corpus(cfg["corpus"])
@@ -87,7 +88,7 @@ async def run(name: str, dataset: Path, out_dir: Path, limit: int | None = None,
     if missing:
         raise ValueError(f"gold sources not in the {cfg['corpus']} corpus: {missing}")
 
-    results = [await _row(r, name, cfg) for r in rows]
+    results = [await _row(r, name, cfg, retrieval_only) for r in rows]
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{name}.json"
     out.write_text(json.dumps({"config": {"name": name, **cfg}, "run_at": datetime.now().isoformat(timespec="seconds"),
@@ -102,9 +103,11 @@ def main() -> None:
     parser.add_argument("--config", required=True, choices=configs.ORDER)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--dataset", type=Path, default=EVAL_DIR / "dataset.jsonl")
+    parser.add_argument("--retrieval-only", action="store_true", help="skip answer generation (CI smoke)")
+    parser.add_argument("--out", type=Path, default=EVAL_DIR / "results")
     args = parser.parse_args()
     try:
-        out = asyncio.run(run(args.config, args.dataset, EVAL_DIR / "results", args.limit))
+        out = asyncio.run(run(args.config, args.dataset, args.out, args.limit, retrieval_only=args.retrieval_only))
     finally:
         retrieval.reset_store()  # close embedded Qdrant before interpreter shutdown
     print(f"Wrote {out}")

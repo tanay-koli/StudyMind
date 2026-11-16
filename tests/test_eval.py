@@ -76,3 +76,17 @@ def test_open_corpus_isolates_every_data_path(tmp_path, keep_settings, monkeypat
 def test_h_label_says_the_agent_replaces_query_rewriting():
     # the agent searches with get_retriever(rewrite=False), so H drops G's multi-query / HyDE
     assert "own query rewrite" in configs.CONFIGS["H"]["change"]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_only_skips_generation(tmp_path, keep_settings, monkeypatch):
+    from core.llm import llm
+
+    async def boom(*a, **k):
+        raise AssertionError("llm.complete must not be called")
+
+    monkeypatch.setattr(llm, "complete", boom)
+    out = await run.run("E", _dataset(tmp_path), tmp_path / "results", corpus=False, retrieval_only=True)
+    row = json.loads(out.read_text(encoding="utf-8"))["rows"][0]
+    assert row["hits"] and row["answer"] == "" and row["refused"] is False and row["error"] is None
+    assert row["prompt_tokens"] == 0 and row["completion_tokens"] == 0

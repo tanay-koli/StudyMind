@@ -2,7 +2,7 @@
 StudyMind — Eval corpora: fetch the course PDFs and ingest them once per chunker into
 data/eval/<fixed|structure>/, with figure captions. Re-running skips what is already there.
 
-Usage: python -m eval.ingest [--corpus fixed|structure|both]
+Usage: python -m eval.ingest [--corpus fixed|structure|both] [--no-caption]
 """
 
 import argparse
@@ -79,12 +79,13 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--corpus", choices=["fixed", "structure", "both"], default="both")
+    parser.add_argument("--no-caption", action="store_true", help="skip figure captioning (CI has no vision model)")
     args = parser.parse_args()
     fetch()
     for corpus in (["fixed", "structure"] if args.corpus == "both" else [args.corpus]):
         try:
             # Only the structure corpus runs with figures on (G, H), so only it is captioned
-            print(corpus, asyncio.run(build(corpus, CORPUS_DIR, caption=corpus == "structure")))
+            print(corpus, asyncio.run(build(corpus, CORPUS_DIR, caption=corpus == "structure" and not args.no_caption)))
         finally:
             retrieval.reset_store()
 
