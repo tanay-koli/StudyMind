@@ -82,6 +82,11 @@ def offline(tmp_path, monkeypatch):
         return "Transformer Models"
 
     monkeypatch.setattr(llm, "complete", fake_complete)
+
+    async def fake_stream(prompt, system=None, **kwargs):
+        yield await llm.complete(prompt, system, **kwargs)  # looked up now so patched complete is honoured
+
+    monkeypatch.setattr(llm, "stream", fake_stream)
     # Whitespace tokens instead of the bge tokenizer (no download)
     monkeypatch.setattr(chunking, "token_spans", lambda t: [m.span() for m in re.finditer(r"\S+", t)])
 

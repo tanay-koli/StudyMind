@@ -76,3 +76,39 @@ async def test_usage_tally_counts_calls_and_tokens(monkeypatch):
     await client.complete("hi")
     await client.complete("again")
     assert client.usage == {"calls": 2, "prompt_tokens": 10, "completion_tokens": 4, "cost_usd": 0.0}
+
+
+def _chunks(*texts, usage=None):
+    out = [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=t))], usage=None) for t in texts]
+    out.append(SimpleNamespace(choices=[], usage=usage))
+    return out
+
+
+def _fake_stream(seen, chunks):
+    async def fake_acompletion(**kw):
+        seen.update(kw)
+
+        async def gen():
+            for c in chunks:
+                yield c
+        return gen()
+    return fake_acompletion
+
+
+@pytest.mark.asyncio
+async def test_stream_yields_deltas_and_tallies_usage(monkeypatch):
+    chunks = _chunks("Hel", "lo", None, usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2))
+    monkeypatch.setattr(litellm, "acompletion", _fake_stream({}, chunks))
+    client = LLMClient()
+    assert [d async for d in client.stream("hi")] == ["Hel", "lo"]
+    assert client.usage == {"calls": 1, "prompt_tokens": 5, "completion_tokens": 2, "cost_usd": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_stream_passes_ollama_defaults(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(litellm, "acompletion", _fake_stream(seen, _chunks("x")))
+    async for _ in LLMClient().stream("hi", model="ollama/qwen2.5:7b"):
+        pass
+    assert seen["stream"] is True and seen["num_ctx"] == 8192 and seen["api_base"]
+    assert seen["stream_options"] == {"include_usage": True}

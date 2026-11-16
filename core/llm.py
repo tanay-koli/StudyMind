@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 
 # Use LiteLLM's bundled price map instead of fetching it from GitHub on import
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
@@ -54,9 +55,9 @@ class LLMClient:
         # Running totals, so the eval runner can read per-question deltas
         self.usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
 
-    async def complete(self, prompt: str, system: str | None = None,
-                       images: list[bytes] | None = None, **kwargs) -> str:
-        """Single-turn completion; returns the text. PNG images go with the prompt. Raises on provider errors."""
+    @staticmethod
+    def _request(prompt, system, images, kwargs):
+        """Build (model, messages, kwargs) shared by complete and stream."""
         messages = [{"role": "system", "content": system}] if system else []
         content = prompt
         if images:
@@ -66,10 +67,17 @@ class LLMClient:
             ]
         messages.append({"role": "user", "content": content})
 
+        kwargs = dict(kwargs)
         model = kwargs.pop("model", settings.llm_model)
         if model.startswith("ollama/"):
             kwargs.setdefault("api_base", settings.ollama_base_url)
             kwargs.setdefault("num_ctx", 8192)
+        return model, messages, kwargs
+
+    async def complete(self, prompt: str, system: str | None = None,
+                       images: list[bytes] | None = None, **kwargs) -> str:
+        """Single-turn completion; returns the text. PNG images go with the prompt. Raises on provider errors."""
+        model, messages, kwargs = self._request(prompt, system, images, kwargs)
 
         start = time.perf_counter()
         resp = await litellm.acompletion(model=model, messages=messages, **kwargs)
@@ -93,6 +101,33 @@ class LLMClient:
             latency,
         )
         return resp.choices[0].message.content or ""
+
+    async def stream(self, prompt: str, system: str | None = None, **kwargs) -> AsyncIterator[str]:
+        """Yield text deltas; usage is tallied once the stream ends."""
+        model, messages, kwargs = self._request(prompt, system, None, kwargs)
+        start = time.perf_counter()
+        resp = await litellm.acompletion(model=model, messages=messages, stream=True,
+                                         stream_options={"include_usage": True}, **kwargs)
+        usage = None
+        async for chunk in resp:
+            usage = getattr(chunk, "usage", None) or usage
+            if chunk.choices and (delta := chunk.choices[0].delta.content):
+                yield delta
+        latency = time.perf_counter() - start
+        pt = getattr(usage, "prompt_tokens", None) or 0
+        ct = getattr(usage, "completion_tokens", None) or 0
+        cost = 0.0  # local models are free; unknown pricing stays 0
+        if not model.startswith("ollama/"):
+            try:
+                cost = sum(litellm.cost_per_token(model=model, prompt_tokens=pt, completion_tokens=ct))
+            except Exception:
+                pass
+        self.usage["calls"] += 1
+        self.usage["prompt_tokens"] += pt
+        self.usage["completion_tokens"] += ct
+        self.usage["cost_usd"] += cost
+        log.info("llm model=%s prompt_tokens=%s completion_tokens=%s cost_usd=%.6f latency_s=%.2f stream=1",
+                 model, pt, ct, cost, latency)
 
     async def complete_json(self, prompt: str, system: str | None = None, **kwargs) -> dict:
         """Completion parsed as JSON; returns the first object in the reply."""
