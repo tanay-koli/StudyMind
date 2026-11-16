@@ -308,7 +308,8 @@ def select_attempts():
 
 def test_feedback_has_no_double_period():
     q = _q("enzyme", 1, "mcq").model_copy(update={"options": ["w", "It blocks the active site.", "y", "z"]})
-    assert agent._feedback(q, "wrong", "From the passage.") ==         "❌ Not quite — the answer is B) It blocks the active site. From the passage."  # noqa: E501
+    expected = "❌ Not quite — the answer is B) It blocks the active site. From the passage."
+    assert agent._feedback(q, "wrong", "From the passage.") == expected
 
 
 @pytest.mark.asyncio
@@ -385,14 +386,16 @@ async def test_done_when_review_targets_planted_mistakes(script, monkeypatch):
 
     s, log, run = script
     names = ["alpha", "beta", "gamma", "delta", "epsilon"]
-    tid, _ = plant([f"{n} is a key idea in this course" for n in names], {i: [(n, "is", n)] for i, n in enumerate(names)})  # noqa: E501
+    tid, _ = plant([f"{n} is a key idea in this course" for n in names],
+                   {i: [(n, "is", n)] for i, n in enumerate(names)})
 
     async def complete_json(prompt, system=None, **kw):
         concept = next(n for n in names if f"'{n}'" in prompt or f"Q about {n}" in prompt)
         if "Grade the student's answer" in prompt:
             return {"verdict": "partial" if concept == "beta" else "correct", "feedback": "From the passage."}
         if "multiple-choice" in prompt:
-            return {"question": f"Q about {concept}?", "options": ["w", "x", "y", "z"], "answer": "A", "difficulty": "easy"}  # noqa: E501
+            return {"question": f"Q about {concept}?", "options": ["w", "x", "y", "z"],
+                    "answer": "A", "difficulty": "easy"}
         return {"question": f"Q about {concept}?", "answer": "ans", "difficulty": "easy"}
 
     async def complete(prompt, system=None, **kw):
@@ -418,7 +421,8 @@ async def test_answers_starting_with_command_words_are_answers(quiz, answer):
     await run("quiz me")
     f["verdicts"] = [("partial", "Close.")]
     _, st = await run(answer)
-    assert st["answer"].startswith("🟡 Partly right.") and st["quiz"]["index"] == 1 and f["picks"][-1]["review"] is False  # noqa: E501
+    assert st["answer"].startswith("🟡 Partly right.") and st["quiz"]["index"] == 1
+    assert f["picks"][-1]["review"] is False
 
 
 @pytest.mark.asyncio

@@ -73,7 +73,8 @@ async def extract_pending() -> int:
                 with contextlib.suppress(TypeError, ValueError):
                     by_n[int(r["n"])] = r.get("triples")
         except Exception as e:
-            # shortcut: a chunk that always fails is retried on every wake/restart, add an attempt count if logs show repeats  # noqa: E501
+            # shortcut: a chunk that always fails is retried on every wake/restart,
+            # add an attempt count if logs show repeats
             log.warning("concept batch %s failed: %s", [c.id for c in batch], e)
             failed.update(c.id for c in batch)
             continue
@@ -88,7 +89,8 @@ async def extract_pending() -> int:
                         failed.add(c.id)  # model omitted it: stay pending, retry next pass
                         continue
                     triples = by_n[n]
-                    triples = [[p.strip() for p in t] for t in triples if _valid(t)] if isinstance(triples, list) else []  # noqa: E501
+                    triples = ([[p.strip() for p in t] for t in triples if _valid(t)]
+                               if isinstance(triples, list) else [])
                     for h, r, t in triples[:MAX_TRIPLES]:
                         s.add(ConceptEdge(chunk_id=c.id, source_id=c.source_id, topic_id=c.topic_id, head=h,
                                           relation=r, tail=t, head_norm=normalise(h), tail_norm=normalise(t)))

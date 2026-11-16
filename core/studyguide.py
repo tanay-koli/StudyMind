@@ -151,7 +151,8 @@ async def _reduce(topic_name: str, sections: list[SectionSummary], terms: list[T
     points = "\n\n".join(f"{s.heading}:\n" + "\n".join(f"- {p}" for p in s.key_points) for s in sections)
     glossary = "\n".join(f"- {t.term}: {t.definition}" for t in terms)
     body = f"{points}\n\nTerms:\n{glossary}"  # terms come last, so truncation drops them first
-    # shortcut: reduce input truncated at 6000 tokens, upgrade to hierarchical reduce if large topics lose coverage in the overview  # noqa: E501
+    # shortcut: reduce input truncated at 6000 tokens,
+    # upgrade to hierarchical reduce if large topics lose coverage in the overview
     spans = chunking.token_spans(body)
     if len(spans) > REDUCE_TOKENS:
         body = body[:spans[REDUCE_TOKENS - 1][1]]

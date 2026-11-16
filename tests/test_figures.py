@@ -29,7 +29,8 @@ def vision(monkeypatch):
         return reply
 
     async def reachable(model=None, timeout=5):
-        return {"ok": state.get("reachable", True), "error": None if state.get("reachable", True) else "down", "model": model}  # noqa: E501
+        reachable = state.get("reachable", True)
+        return {"ok": reachable, "error": None if reachable else "down", "model": model}
 
     monkeypatch.setattr(llm, "complete", complete)
     monkeypatch.setattr(figures, "check_llm", reachable)
@@ -52,7 +53,8 @@ async def test_ingest_pdf_queues_figures(tmp_path):
     assert result["status"] == "success" and result["figures_queued"] == 2
     rows = _pending()
     assert len(rows) == 2 and {r.section_heading for r in rows} == {"Krebs Cycle"}
-    assert all((config.FIGURE_DIR / r.image_path).is_file() and r.image_path.startswith(f"{r.source_id}/") for r in rows)  # noqa: E501
+    assert all((config.FIGURE_DIR / r.image_path).is_file()
+               and r.image_path.startswith(f"{r.source_id}/") for r in rows)
 
 
 @pytest.mark.asyncio
@@ -109,7 +111,8 @@ async def test_reused_ids_do_not_give_a_new_upload_the_old_caption(tmp_path, vis
     a = await ingest_pdf(str(diagram_only_pdf(tmp_path / "a.pdf")))
 
     async def complete(prompt, system=None, **kw):
-        if not any(c.text.startswith("Figure") for c in _chunks()) and _pending()[0].source_id == a["source_id"]                 and not vision.get("swapped"):  # noqa: E501
+        if (not any(c.text.startswith("Figure") for c in _chunks())
+                and _pending()[0].source_id == a["source_id"] and not vision.get("swapped")):
             vision["swapped"] = True
             topics.delete_source(a["source_id"])
             await ingest_pdf(str(diagram_only_pdf(tmp_path / "b.pdf")))

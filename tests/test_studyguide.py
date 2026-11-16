@@ -99,10 +99,12 @@ async def test_map_retries_once_then_marks_section(monkeypatch):
 def test_render_markdown_contains_sections():
     from core.studyguide import SectionSummary, StudyGuide, Term
     md = render_markdown(StudyGuide(
-        topic="Topic", overview="Over", sections=[SectionSummary(heading="A", source_title="Book", pages="1-2", key_points=["kp"])],  # noqa: E501
+        topic="Topic", overview="Over",
+        sections=[SectionSummary(heading="A", source_title="Book", pages="1-2", key_points=["kp"])],
         key_concepts=["kc"], terms=[Term(term="T", definition="d")], review_questions=["rq?"]))
     assert md.startswith("# Study Guide: Topic")
-    for part in ("Over", "## Sections", "### A (Book · p.1-2)", "- kp", "## Key Concepts", "## Terms", "## Review Questions"):  # noqa: E501
+    for part in ("Over", "## Sections", "### A (Book · p.1-2)", "- kp", "## Key Concepts", "## Terms",
+                 "## Review Questions"):
         assert part in md
 
 @pytest.mark.asyncio

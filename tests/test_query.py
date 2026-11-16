@@ -263,7 +263,8 @@ async def test_connect_no_overlap_empty_state(fake):
 
 def test_context_labels_media_and_citations_carry_it():
     hits = [
-        Hit(1, 1, "Slides", 4, None, "Figure (p.4): cycle", 1.0, {"kind": "figure", "image_path": "a.png", "start_s": None, "url": None}),  # noqa: E501
+        Hit(1, 1, "Slides", 4, None, "Figure (p.4): cycle", 1.0,
+            {"kind": "figure", "image_path": "a.png", "start_s": None, "url": None}),
         Hit(2, 1, "Slides", 5, None, "| a |", 1.0, {"kind": "table", "image_path": None, "start_s": None, "url": None}),
         Hit(3, 2, "YouTube: abc", None, None, "spoken", 1.0,
             {"kind": "video", "image_path": None, "start_s": 754.0, "url": "https://youtu.be/abc?t=754"}),
@@ -271,7 +272,8 @@ def test_context_labels_media_and_citations_carry_it():
     ]
     text, cites = query._context(hits)
     headers = [line for line in text.splitlines() if line.startswith("[")]
-    assert headers == ["[1] Slides, p.4 — Figure", "[2] Slides, p.5 — Table", "[3] YouTube: abc @ 12:34", "[4] Slides, p.6"]  # noqa: E501
+    assert headers == ["[1] Slides, p.4 — Figure", "[2] Slides, p.5 — Table",
+                       "[3] YouTube: abc @ 12:34", "[4] Slides, p.6"]
     assert [(c["kind"], c["image_url"], c["url"]) for c in cites] == [
         ("figure", "/figures/1", None), ("table", None, None), ("video", None, "https://youtu.be/abc?t=754"),
         ("text", None, None),

@@ -23,7 +23,8 @@ def _row(id, type, answer="Heaps are trees [1].", refused=False, error=None, jud
 def result_E():
     return {"config": {"name": "E"}, "rows": [
         _row("q1", "text"),
-        _row("q2", "text", answer="", error="APIConnectionError: down", judge={"faithfulness": None, "correctness": None}),  # noqa: E501
+        _row("q2", "text", answer="", error="APIConnectionError: down",
+             judge={"faithfulness": None, "correctness": None}),
         _row("q3", "unanswerable", answer="This isn't in your material.", refused=True,
              judge={"faithfulness": None, "correctness": None}),
     ]}

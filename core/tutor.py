@@ -92,7 +92,8 @@ def _topic_targets(topic_id: Optional[str], n: int) -> list[tuple[str, int]]:
 # Questions and grading
 # ---------------------------------------------------------------------------
 
-QUESTION_SYSTEM = "You write quiz questions for a student from one passage of their study material. Use only the passage."  # noqa: E501
+QUESTION_SYSTEM = ("You write quiz questions for a student from one passage of their study material. "
+                   "Use only the passage.")
 TUTOR_SYSTEM = "You are a patient tutor. Use only the passage you are given."
 UNGRADED = "Couldn't grade this answer."
 _LETTERS = "ABCD"
