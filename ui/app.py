@@ -46,6 +46,17 @@ def api(method: str, path: str, timeout: int = 300, **kwargs):
     return resp.json()
 
 
+def _sse_events(lines):
+    """Yield (event, data) from SSE lines; data is the parsed JSON (the API never emits raw newlines in it)."""
+    event = None
+    for line in lines:
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:") and event:
+            yield event, json.loads(line[5:].strip())
+            event = None
+
+
 def suggest(excerpt: str) -> str:
     return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
@@ -793,7 +804,9 @@ with tab_agent:
 
         with st.chat_message("assistant"):
             reply = None
+            answer_box = st.empty()
             with st.status("Thinking…", expanded=True) as status:
+                buffer, attempt = "", 1
                 try:
                     with httpx.stream("POST", f"{settings.api_url}/agent", json=body, timeout=900) as resp:
                         if resp.status_code >= 400:
@@ -808,8 +821,14 @@ with tab_agent:
                                 step = event["label"] + (f' → "{event["query"]}"' if event.get("query") else "")
                                 st.write(step)
                                 status.update(label=event["label"].capitalize() + "…")
+                            elif event["event"] == "token":
+                                if event["attempt"] != attempt:  # self-check regenerated the answer
+                                    buffer, attempt = "", event["attempt"]
+                                buffer += event["text"]
+                                answer_box.markdown(buffer)
                             elif event["event"] == "done":
                                 status.update(label="Done", state="complete", expanded=False)
+                                answer_box.empty()
                                 reply = event
                             else:
                                 status.update(label="Failed", state="error")
@@ -896,13 +915,41 @@ with tab_ask:
 
             # Get answer
             with st.chat_message("assistant"):
-                with st.spinner("🤔 Searching your material..."):
-                    if selected_ask_tid == "all_topics":
-                        body = {"question": question, "mode": "global"}
-                    else:
-                        mode = "cross" if enable_cross else "scoped"
-                        body = {"question": question, "mode": mode, "topic_id": selected_ask_tid}
-                    result = api("POST", "/ask", json=body)
+                if selected_ask_tid == "all_topics":
+                    body = {"question": question, "mode": "global"}
+                else:
+                    mode = "cross" if enable_cross else "scoped"
+                    body = {"question": question, "mode": mode, "topic_id": selected_ask_tid}
+                if body["mode"] == "cross":
+                    with st.spinner("🤔 Searching your material..."):
+                        result = api("POST", "/ask", json=body)
+                else:
+                    result, box, buffer = None, st.empty(), ""
+                    try:
+                        with st.spinner("🤔 Searching your material..."), httpx.stream(
+                            "POST", f"{settings.api_url}/ask/stream", json=body, timeout=900
+                        ) as resp:
+                            if resp.status_code >= 400:
+                                resp.read()
+                                st.error(f"API error {resp.status_code}: {resp.text[:300]}")
+                                st.stop()
+                            for ev, data in _sse_events(resp.iter_lines()):
+                                if ev == "token":
+                                    buffer += data
+                                    box.markdown(buffer)
+                                elif ev == "done":
+                                    result = data
+                                elif ev == "error":
+                                    result = {"error": data}
+                    except httpx.TransportError:
+                        st.error(
+                            f"Cannot reach the StudyMind API at {settings.api_url}. "
+                            "Start it with: uvicorn api.main:app"
+                        )
+                        st.stop()
+                    box.empty()
+                    if result is None:
+                        result = {"error": "The answer stream ended unexpectedly."}
 
                 if result.get("error"):
                     st.error(result["error"])
