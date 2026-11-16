@@ -77,8 +77,8 @@ data/audio/
 data/models/
 data/qdrant/
 
-# Eval outputs
-eval/results/
+# Eval outputs: results are committed (the README table is built from them); the judge cache is not
+eval/results/judge_cache.json
 
 # Eval corpora (fetched by python -m eval.ingest) and their indexes
 eval/corpus/*.pdf

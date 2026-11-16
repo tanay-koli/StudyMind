@@ -12,7 +12,7 @@ from core.topics import init_db
 CORPUS_ROOT = DATA_DIR / "eval"
 
 # Edit after F-multi and F-hyde have run: the one with the higher Recall@5 (tie -> F-multi)
-BEST_F = "F-multi"
+BEST_F = "F-hyde"
 
 _E = dict(change="+ cross-encoder reranker", corpus="structure", agent=False, retriever="hybrid",
           rerank=True, figures=False, query_rewrite="none", embed_model="bge-small")
