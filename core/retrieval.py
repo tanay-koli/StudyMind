@@ -16,6 +16,7 @@ from functools import lru_cache
 from typing import Optional, Protocol
 
 from qdrant_client import QdrantClient, models
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import func, select
 
 from core.config import DATA_DIR, settings
@@ -174,10 +175,12 @@ def cached_dense(texts: list[str]) -> list[list[float]]:
         found = {r.sha: r.vector for r in rows}
         miss = [i for i, h in enumerate(shas) if h not in found and shas.index(h) == i]  # one embed per distinct text
         if miss:
-            # merge, not add: concurrent ingests may race on the same text
-            for i, v in zip(miss, embed_dense([texts[i] for i in miss], query=False)):
-                found[shas[i]] = array("f", v).tobytes()
-                s.merge(EmbeddingCache(model=model, sha=shas[i], vector=found[shas[i]]))
+            vecs = embed_dense([texts[i] for i in miss], query=False)
+            rows = [{"model": model, "sha": shas[i], "vector": array("f", v).tobytes()} for i, v in zip(miss, vecs)]
+            for r in rows:
+                found[r["sha"]] = r["vector"]
+            # ignore conflicts: a concurrent ingest may have just cached the same text
+            s.exec(sqlite_insert(EmbeddingCache).values(rows).on_conflict_do_nothing())
             s.commit()
     return [array("f", found[h]).tolist() for h in shas]
 

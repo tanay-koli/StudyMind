@@ -372,3 +372,29 @@ def test_cached_vectors_round_trip():
     first = retrieval.cached_dense(["a", "b"])
     second = retrieval.cached_dense(["a", "b"])
     assert all(abs(x - y) < 1e-6 for u, v in zip(first, second) for x, y in zip(u, v))
+
+
+def test_cache_write_tolerates_concurrent_insert(monkeypatch):
+    real = retrieval.embed_dense
+    raced = []
+
+    def racing(texts, *, query):
+        out = real(texts, query=query)
+        if not raced:  # another thread caches "a" after our lookup, before our write
+            raced.append(1)
+            retrieval.cached_dense(["a"])
+        return out
+
+    monkeypatch.setattr(retrieval, "embed_dense", racing)
+    vecs = retrieval.cached_dense(["a", "b"])
+    want = [real([t], query=False)[0] for t in ("a", "b")]
+    assert all(abs(x - y) < 1e-6 for u, v in zip(vecs, want) for x, y in zip(u, v))
+    assert retrieval.cached_dense(["a", "b"]) == vecs
+
+
+def test_cached_dense_dedupes_and_keeps_order(monkeypatch):
+    retrieval.cached_dense(["b"])
+    seen = _count_embeds(monkeypatch)
+    out = retrieval.cached_dense(["a", "b", "a", "c", "c"])
+    assert sorted(seen) == ["a", "c"]
+    assert out[0] == out[2] and out[3] == out[4] and out[0] != out[1] != out[3]
