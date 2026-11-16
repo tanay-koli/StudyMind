@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.14.5
+      - run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  smoke-eval:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: mkdir -p data
+      - uses: actions/cache@v4.2.3
+        with:
+          path: data/models
+          key: fastembed-${{ hashFiles('core/retrieval.py') }}
+      # fixed key: the source URL (eval/ingest.py SOURCE_URL) never changes
+      - uses: actions/cache@v4.2.3
+        with:
+          path: eval/corpus/*.pdf
+          key: ods-corpus-v1
+      - run: python -m eval.ingest --corpus structure --no-caption
+      - run: python -m eval.run --config E --retrieval-only --out ci-results
+      - run: python -m eval.smoke ci-results/E.json
