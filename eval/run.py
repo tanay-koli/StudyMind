@@ -106,6 +106,8 @@ def main() -> None:
     parser.add_argument("--retrieval-only", action="store_true", help="skip answer generation (CI smoke)")
     parser.add_argument("--out", type=Path, default=EVAL_DIR / "results")
     args = parser.parse_args()
+    if args.retrieval_only and configs.CONFIGS[args.config]["agent"]:
+        parser.error("--retrieval-only does not apply to agent configs")
     try:
         out = asyncio.run(run(args.config, args.dataset, args.out, args.limit, retrieval_only=args.retrieval_only))
     finally:

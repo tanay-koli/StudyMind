@@ -34,3 +34,15 @@ def test_smoke_ignores_unanswerable_rows():
     result, dataset = _case(10, extra_unanswerable=True)
     ok, recall = smoke.check(result, dataset, BASE)
     assert ok and abs(recall - 10 / 15) < 1e-9
+
+
+def test_smoke_fails_on_errored_row():
+    result, dataset = _case(15)
+    result["rows"][0]["error"] = "RuntimeError: boom"
+    assert smoke.check(result, dataset, BASE)[0] is False
+
+
+def test_smoke_fails_on_missing_row():
+    result, dataset = _case(15)
+    result["rows"].pop()
+    assert smoke.check(result, dataset, BASE)[0] is False
