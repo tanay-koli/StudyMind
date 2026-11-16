@@ -61,15 +61,23 @@ def suggest(excerpt: str) -> str:
     return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
 
+# Every widget click reruns the page; without the cache each figure in the chat is fetched again.
+# ttl bounds a stale image if an old database reuses a deleted chunk's id.
+@st.cache_data(ttl=600, show_spinner=False)
+def _figure_bytes(url: str) -> bytes:
+    resp = httpx.get(url, timeout=httpx.Timeout(30, connect=3))
+    resp.raise_for_status()  # errors are not cached, so a figure that failed is retried next rerun
+    return resp.content
+
+
 def _figure(image_url: str, caption: str | None = None) -> None:
     """Fetch figure bytes server-side: under compose the browser cannot resolve the api host."""
     try:
-        resp = httpx.get(settings.api_url + image_url, timeout=30)
-        resp.raise_for_status()
+        data = _figure_bytes(settings.api_url + image_url)
     except httpx.HTTPError:
         st.caption(f"{caption or 'Figure'} (image unavailable)")
         return
-    st.image(resp.content, caption=caption)
+    st.image(data, caption=caption)
 
 
 def _clock(seconds: float) -> str:

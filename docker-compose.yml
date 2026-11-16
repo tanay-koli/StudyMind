@@ -22,8 +22,9 @@ services:
       - studymind-data:/app/data
       # Reuse the already-downloaded fastembed models instead of re-fetching them
       - ./data/models:/app/data/models
+    # localhost only: the API has no login, so it must not be reachable from the network
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       - qdrant
 
@@ -33,7 +34,7 @@ services:
     environment:
       API_URL: http://api:8000
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     depends_on:
       - api
 
