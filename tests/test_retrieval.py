@@ -332,3 +332,43 @@ def test_store_uses_server_when_qdrant_url_set(monkeypatch):
     retrieval.store()
     assert calls[1] == {"location": ":memory:"}
     retrieval.reset_store()  # drop the recorder client; the next test gets the real one
+
+
+def _count_embeds(monkeypatch):
+    seen = []
+    real = retrieval.embed_dense
+
+    def counting(texts, *, query):
+        seen.extend(texts)
+        return real(texts, query=query)
+
+    monkeypatch.setattr(retrieval, "embed_dense", counting)
+    return seen
+
+
+def _three_chunks():
+    retrieval.index_chunks(_src(), "general", [Block(1, "A", "alpha"), Block(2, "B", "beta"), Block(3, "C", "gamma")])
+
+
+def test_reindex_reuses_cached_embeddings(monkeypatch):
+    seen = _count_embeds(monkeypatch)
+    _three_chunks()
+    assert len(seen) == 3
+    before = _count()
+    retrieval.reindex()
+    assert len(seen) == 3
+    assert _count() == before
+
+
+def test_embedding_cache_is_per_model(monkeypatch):
+    seen = _count_embeds(monkeypatch)
+    _three_chunks()
+    monkeypatch.setattr(settings, "embed_model", "nomic")
+    retrieval.reindex()
+    assert len(seen) == 6
+
+
+def test_cached_vectors_round_trip():
+    first = retrieval.cached_dense(["a", "b"])
+    second = retrieval.cached_dense(["a", "b"])
+    assert all(abs(x - y) < 1e-6 for u, v in zip(first, second) for x, y in zip(u, v))

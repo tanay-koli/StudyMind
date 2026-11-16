@@ -7,8 +7,10 @@ One collection per embedding model, so models can be compared.
 """
 
 import asyncio
+import hashlib
 import threading
 import warnings
+from array import array
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional, Protocol
@@ -17,7 +19,7 @@ from qdrant_client import QdrantClient, models
 from sqlmodel import func, select
 
 from core.config import DATA_DIR, settings
-from core.db import Chunk, ChunkMedia, Source, session
+from core.db import Chunk, ChunkMedia, EmbeddingCache, Source, session
 from core.parse import Block
 
 # name -> (fastembed model, dim, query prefix, document prefix)
@@ -162,12 +164,30 @@ def _search_text(c: Chunk) -> str:
     return f"{c.section_heading}\n{c.text}" if c.section_heading else c.text
 
 
+def cached_dense(texts: list[str]) -> list[list[float]]:
+    """Document embeddings, embedding only texts not yet cached for the current model."""
+    model = settings.embed_model
+    d_prefix = EMBED_MODELS[model][3]
+    shas = [hashlib.sha256((d_prefix + t).encode()).hexdigest() for t in texts]
+    with session() as s:
+        rows = s.exec(select(EmbeddingCache).where(EmbeddingCache.model == model, EmbeddingCache.sha.in_(shas))).all()
+        found = {r.sha: r.vector for r in rows}
+        miss = [i for i, h in enumerate(shas) if h not in found and shas.index(h) == i]  # one embed per distinct text
+        if miss:
+            # merge, not add: concurrent ingests may race on the same text
+            for i, v in zip(miss, embed_dense([texts[i] for i in miss], query=False)):
+                found[shas[i]] = array("f", v).tobytes()
+                s.merge(EmbeddingCache(model=model, sha=shas[i], vector=found[shas[i]]))
+            s.commit()
+    return [array("f", found[h]).tolist() for h in shas]
+
+
 def _upsert(chunks: list[Chunk]) -> None:
     name = _ensure_collection()
     for i in range(0, len(chunks), _BATCH):
         batch = chunks[i:i + _BATCH]
         texts = [_search_text(c) for c in batch]
-        dense = embed_dense(texts, query=False)
+        dense = cached_dense(texts)
         sparse = embed_sparse(texts, query=False)
         points = [
             models.PointStruct(

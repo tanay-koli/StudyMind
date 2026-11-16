@@ -74,6 +74,13 @@ class ChunkMedia(SQLModel, table=True):
     url: Optional[str] = None  # video deep link at start_s
 
 
+class EmbeddingCache(SQLModel, table=True):
+    # Document embeddings keyed by model and sha256(prefix + text), so known text is never re-embedded
+    model: str = Field(primary_key=True)
+    sha: str = Field(primary_key=True)
+    vector: bytes  # float32 array
+
+
 class PendingFigure(SQLModel, table=True):
     # A figure crop waiting for the vision model; becomes a Chunk + ChunkMedia once captioned.
     # AUTOINCREMENT: ids are never reused, so a row deleted mid-caption can't be mistaken for a new upload's
