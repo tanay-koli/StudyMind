@@ -8,6 +8,17 @@ from eval import ingest as eval_ingest
 from tests.pdfs import figure_pdf
 
 
+def test_fetch_skips_the_download_when_chapters_exist(tmp_path, monkeypatch):
+    for stem in eval_ingest.CHAPTERS:
+        (tmp_path / f"{stem}.pdf").write_bytes(b"%PDF-1.4")
+
+    def no_network(*a, **k):
+        raise AssertionError("downloaded the book although every chapter is committed")
+
+    monkeypatch.setattr(eval_ingest.httpx, "stream", no_network)
+    assert len(eval_ingest.fetch(tmp_path)) == len(eval_ingest.CHAPTERS)
+
+
 @pytest.mark.asyncio
 async def test_build_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "chunker", settings.chunker)

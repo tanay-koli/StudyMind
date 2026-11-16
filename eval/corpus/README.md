@@ -3,7 +3,9 @@
 *Open Data Structures* (Python edition) by Pat Morin, released under a Creative Commons Attribution
 licence (see the book's "Why This Book?" section): <https://opendatastructures.org/ods-python.pdf>.
 
-`python -m eval.ingest` downloads the book here and splits out three chapters (PDF page ranges of the full book):
+The three chapter PDFs below are excerpts of that book, redistributed unchanged under its licence, with
+credit to Pat Morin. They are committed so CI and fresh clones never depend on the website; `python -m eval.ingest`
+downloads the full book only if one of them is missing (page ranges of the full book):
 
 | File | Chapter | Pages |
 |---|---|---|
@@ -12,4 +14,4 @@ licence (see the book's "Why This Book?" section): <https://opendatastructures.o
 | `ods-06-binary-trees.pdf` | 6 Binary Trees | 139–156 |
 
 Page numbers in `eval/dataset.jsonl` gold anchors are pages of these chapter files (1-based), not of the book.
-The PDFs are git-ignored; this file and `eval/ingest.py` are the record of exactly what was used.
+The full book (`ods-python.pdf`) is git-ignored; this file and `eval/ingest.py` record exactly what was used.

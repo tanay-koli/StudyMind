@@ -34,10 +34,14 @@ CHAPTERS: dict[str, tuple[int, int]] = {
 
 
 def fetch(dest: Path = CORPUS_DIR) -> list[Path]:
-    """Download the book once and split out the chosen chapters (skips files already there)."""
+    """Split the chosen chapters out of the book, downloading it only if a chapter is missing.
+
+    The chapter PDFs are committed (CC BY), so CI and fresh clones never need the website.
+    """
     dest.mkdir(parents=True, exist_ok=True)
     book = dest / "ods-python.pdf"
-    if not book.exists():
+    missing = any(not (dest / f"{stem}.pdf").exists() for stem in CHAPTERS)
+    if missing and not book.exists():
         with httpx.stream("GET", SOURCE_URL, follow_redirects=True, timeout=120) as r:
             r.raise_for_status()
             book.write_bytes(r.read())

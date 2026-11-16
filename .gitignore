@@ -80,6 +80,6 @@ data/qdrant/
 # Eval outputs: results are committed (the README table is built from them); the judge cache is not
 eval/results/judge_cache.json
 
-# Eval corpora (fetched by python -m eval.ingest) and their indexes
-eval/corpus/*.pdf
+# Eval corpus: the three chapter PDFs are committed; the full book and the indexes are not
+eval/corpus/ods-python.pdf
 data/eval/

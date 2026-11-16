@@ -44,11 +44,7 @@ jobs:
         with:
           path: data/models
           key: fastembed-${{ hashFiles('core/retrieval.py') }}
-      # fixed key: the source URL (eval/ingest.py SOURCE_URL) never changes
-      - uses: actions/cache@v4.2.3
-        with:
-          path: eval/corpus/*.pdf
-          key: ods-corpus-v1
+      # the chapter PDFs are committed, so this never downloads the book
       - run: python -m eval.ingest --corpus structure --no-caption
       - run: python -m eval.run --config E --retrieval-only --out ci-results
       - run: python -m eval.smoke ci-results/E.json
