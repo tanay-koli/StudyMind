@@ -110,7 +110,9 @@ def store() -> QdrantClient:
     global _client
     with _lock:
         if _client is None:
-            if settings.qdrant_path == ":memory:":
+            if settings.qdrant_url:
+                _client = QdrantClient(url=settings.qdrant_url)
+            elif settings.qdrant_path == ":memory:":
                 _client = QdrantClient(location=":memory:")
             else:
                 _client = QdrantClient(path=settings.qdrant_path)

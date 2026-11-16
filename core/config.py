@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     rerank: bool = True  # False: hybrid returns the RRF order (eval ablation)
     figures: bool = True  # False: figure-caption chunks are left out of results (eval ablation)
     qdrant_path: str = (DATA_DIR / "qdrant").as_posix()  # ":memory:" in tests
+    qdrant_url: str = ""  # Qdrant server (docker compose); empty = embedded at qdrant_path
     # Reranker logit a hit needs to count as relevant (measured: related -3.4..4.0, unrelated -5.2 and below)
     relevance_min: float = -4.0
 

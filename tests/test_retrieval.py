@@ -308,3 +308,27 @@ def test_chunk_ids_are_not_reused_after_a_delete():
     retrieval.index_chunks(_src(), "general", [Block(1, None, "beta")])
     with session() as s:
         assert s.exec(select(Chunk.id)).one() > old
+
+
+def test_store_uses_server_when_qdrant_url_set(monkeypatch):
+    calls = []
+
+    class Recorder:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(retrieval, "QdrantClient", Recorder)
+    monkeypatch.setattr(settings, "qdrant_url", "http://qdrant:6333")
+    retrieval.reset_store()
+    retrieval.store()
+    assert calls == [{"url": "http://qdrant:6333"}]
+
+    monkeypatch.setattr(settings, "qdrant_url", "")
+    monkeypatch.setattr(settings, "qdrant_path", ":memory:")
+    retrieval.reset_store()
+    retrieval.store()
+    assert calls[1] == {"location": ":memory:"}
+    retrieval.reset_store()  # drop the recorder client; the next test gets the real one
