@@ -1,0 +1,40 @@
+# StudyMind look: calm, paper-like light theme and a soft dark one; Streamlit follows the system setting.
+# One accent (ink blue) for actions and the active topic; everything else is neutral.
+
+[client]
+toolbarMode = "minimal"  # no "Deploy" button: this is a local app
+
+[theme]
+# Atkinson Hyperlegible: built for legibility, which suits long study sessions; falls back to sans-serif offline
+font = "Atkinson Hyperlegible Next:https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600&display=swap, sans-serif"
+headingFont = "Atkinson Hyperlegible Next:https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600&display=swap, sans-serif"
+codeFont = "Atkinson Hyperlegible Mono:https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono&display=swap, monospace"
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+headingFontSizes = ["1.75rem", "1.25rem", "1.0625rem", "1rem", "0.9375rem", "0.875rem"]
+baseRadius = "0.5rem"
+showWidgetBorder = true
+linkUnderline = false
+
+[theme.light]
+primaryColor = "#3451c7"
+backgroundColor = "#fbfbf9"
+secondaryBackgroundColor = "#f2f2ee"
+textColor = "#1d2026"
+borderColor = "#e3e3dd"
+
+[theme.light.sidebar]
+backgroundColor = "#f4f4f0"
+secondaryBackgroundColor = "#eaeae4"
+borderColor = "#e0e0d9"
+
+[theme.dark]
+primaryColor = "#4f68d6"  # white button text stays above 4.5:1
+backgroundColor = "#131418"
+secondaryBackgroundColor = "#1c1e23"
+textColor = "#e6e7ea"
+borderColor = "#2a2d34"
+
+[theme.dark.sidebar]
+backgroundColor = "#17181c"
+secondaryBackgroundColor = "#22242a"
+borderColor = "#2a2d34"

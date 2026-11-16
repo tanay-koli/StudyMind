@@ -94,8 +94,3 @@ async def check_llm(model: str | None = None, timeout: int = 5) -> dict:
     except Exception as exc:
         result.update(ok=False, error=f"Cannot reach Ollama at {settings.ollama_base_url}: {exc}")
     return result
-
-
-def get_cloud_status_emoji(check: dict) -> str:
-    """Return a colored status indicator for the sidebar."""
-    return "🟢 Connected" if check["ok"] else "🔴 Disconnected"

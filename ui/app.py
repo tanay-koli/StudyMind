@@ -23,7 +23,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core.config import settings, get_cloud_status_emoji  # noqa: E402
+from core.config import settings  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -96,11 +96,11 @@ def _render_citations(citations: list[dict], answer: str = "") -> None:
         kind = c.get("kind", "text")
         page = f" · p.{c['page']}" if c.get("page") else ""
         if kind == "figure":
-            label = f"[{n}] 🖼️ {c['source_title']}{page}"
+            label = f"[{n}] :material/image: {c['source_title']}{page}"
         elif kind == "video" and c.get("start_s") is not None:
-            label = f"[{n}] 🎬 {c['source_title']} @ {_clock(c['start_s'])}"
+            label = f"[{n}] :material/smart_display: {c['source_title']} @ {_clock(c['start_s'])}"
         else:
-            label = f"[{n}] 📄 {c['source_title']}{page}"
+            label = f"[{n}] :material/description: {c['source_title']}{page}"
         with col, st.popover(label, width="stretch"):
             if c.get("image_url"):
                 _figure(c["image_url"])
@@ -119,147 +119,18 @@ def _render_citations(citations: list[dict], answer: str = "") -> None:
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="StudyMind — AI Study Assistant",
-    page_icon="🧠",
+    page_icon=":material/school:",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
-# Custom CSS for a premium dark look
+# Layout tweaks the theme cannot express (colours and fonts live in .streamlit/config.toml)
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Import Inter font */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-    /* Global font */
-    html, body, .stApp, [class*="st-"] {
-        font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
-    }
-
-    /* Remove default Streamlit padding for tighter look */
-    .block-container {
-        padding-top: 2rem !important;
-        padding-bottom: 1rem !important;
-    }
-
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0d1117 0%, #161b22 100%) !important;
-        border-right: 1px solid #21262d !important;
-    }
-
-    [data-testid="stSidebar"] .stMarkdown h1,
-    [data-testid="stSidebar"] .stMarkdown h2,
-    [data-testid="stSidebar"] .stMarkdown h3 {
-        color: #e6edf3 !important;
-    }
-
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: transparent;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px !important;
-        padding: 10px 20px !important;
-        font-weight: 500 !important;
-    }
-
-    /* Source cards in sidebar */
-    .source-card {
-        background: #161b22;
-        border: 1px solid #21262d;
-        border-radius: 10px;
-        padding: 12px 14px;
-        margin-bottom: 8px;
-        transition: border-color 0.2s ease;
-    }
-
-    .source-card:hover {
-        border-color: #7C5CFC;
-    }
-
-    .source-card .source-type {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: #8b949e;
-    }
-
-    .source-card .source-title {
-        font-size: 14px;
-        font-weight: 500;
-        color: #e6edf3;
-        margin-top: 2px;
-        word-break: break-word;
-    }
-
-    .source-card .source-time {
-        font-size: 11px;
-        color: #484f58;
-        margin-top: 4px;
-    }
-
-    /* Status badge */
-    .status-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 500;
-        background: #0d1117;
-        border: 1px solid #21262d;
-    }
-
-    /* Hero header */
-    .hero-header {
-        text-align: center;
-        padding: 1rem 0 2rem 0;
-    }
-
-    .hero-header h1 {
-        font-size: 2rem !important;
-        font-weight: 700 !important;
-        background: linear-gradient(135deg, #7C5CFC 0%, #00C9A7 50%, #FF6B6B 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin-bottom: 0.25rem !important;
-    }
-
-    .hero-header p {
-        color: #8b949e;
-        font-size: 1rem;
-        margin-top: 0;
-    }
-
-    /* Graph container */
-    .graph-container {
-        border: 1px solid #21262d;
-        border-radius: 12px;
-        overflow: hidden;
-        margin: 1rem 0;
-    }
-
-    /* Chat messages */
-    .stChatMessage {
-        border-radius: 12px !important;
-    }
-
-    /* Spinner text */
-    .stSpinner > div {
-        color: #8b949e !important;
-    }
-
-    /* Info/success/error boxes */
-    .stAlert {
-        border-radius: 10px !important;
-    }
+    .block-container { padding-top: 2.5rem; max-width: 1180px; }
+    ::selection { background: rgba(52, 81, 199, 0.22); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -289,44 +160,27 @@ if "active_audio_topic" not in st.session_state:
 # Sidebar — Knowledge Base & Status
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("""
-    <div style="text-align: center; padding: 1rem 0;">
-        <div style="font-size: 2.5rem;">🧠</div>
-        <div style="
-            font-size: 1.4rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #7C5CFC 0%, #00C9A7 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        ">StudyMind</div>
-        <div style="font-size: 0.8rem; color: #8b949e; margin-top: 2px;">
-            AI Study Assistant • local RAG
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
     # LLM status
     for label, status in (
         (f"LLM ({settings.llm_model})", st.session_state.health["llm"]),
         (f"Vision ({settings.vision_model})", st.session_state.health["vision"]),
     ):
-        st.markdown(f"**{label}:** {get_cloud_status_emoji(status)}")
+        badge = ":green-badge[Connected]" if status["ok"] else ":red-badge[Disconnected]"
+        st.markdown(f"{label} {badge}")
         if not status["ok"] and status.get("error"):
-            st.error(status["error"], icon="⚠️")
+            st.error(status["error"], icon=":material/error:")
 
-    if st.button("🔄 Refresh Status", use_container_width=True):
+    if st.button("Refresh status", icon=":material/refresh:", use_container_width=True):
         st.session_state.health = api("GET", "/health")
         st.rerun()
 
     # Learner progress: what the review would ask about, and what StudyMind remembers about you
     learner = api("GET", "/learner")
-    with st.expander("📈 Your progress"):
+    with st.expander("Your progress", icon=":material/trending_up:"):
         st.caption(f"{learner['to_review']} concepts to review")
         for m in learner["mastery"][:5]:
-            mark = {"correct": "✅", "partial": "🟡", "wrong": "❌"}.get(m["last_verdict"], "•")
+            mark = {"correct": ":green[:material/check_circle:]", "partial": ":orange[:material/timelapse:]",
+                    "wrong": ":red[:material/cancel:]"}.get(m["last_verdict"], ":gray[:material/circle:]")
             st.markdown(f"{mark} {m['concept']} — next review {m['next_review']}")
         if not learner["mastery"]:
             st.caption("No quiz answers yet. Try 'quiz me' in the Agent tab.")
@@ -335,7 +189,7 @@ with st.sidebar:
         for f in learner["facts"]:
             col_fact, col_del = st.columns([5, 1])
             col_fact.caption(f["fact"])
-            if col_del.button("🗑", key=f"fact_{f['id']}", help="Forget this"):
+            if col_del.button(":material/delete:", key=f"fact_{f['id']}", help="Forget this", type="tertiary"):
                 api("DELETE", f"/learner/facts/{f['id']}")
                 st.rerun()
 
@@ -346,50 +200,47 @@ with st.sidebar:
     sources = api("GET", "/sources")
 
     # Topics Section
-    st.markdown("### 📚 Topics (Notebooks)")
+    st.markdown("#### Topics")
 
     # "All Topics" selector
     all_selected = st.session_state.selected_topic == "all_topics"
     if st.button(
-        "🗂️ All Topics",
+        "All Topics",
         key="btn_all_topics",
+        icon=":material/folder_open:",
         use_container_width=True,
         type="primary" if all_selected else "secondary",
     ):
         st.session_state.selected_topic = "all_topics"
         st.rerun()
 
-    # List each topic with color dot and options
     for tid, topic in topics.items():
         count = sum(1 for s in sources if s["topic_id"] == tid)
-        is_selected = st.session_state.selected_topic == tid
+        if st.button(
+            f"{topic['name']} ({count})",
+            key=f"sel_{tid}",
+            use_container_width=True,
+            type="primary" if st.session_state.selected_topic == tid else "secondary",
+        ):
+            st.session_state.selected_topic = tid
+            st.rerun()
 
-        col_dot, col_name, col_sg, col_aud = st.columns([0.15, 0.55, 0.15, 0.15])
-        with col_dot:
-            st.markdown(f"<p style='color: {topic['color']}; margin-top: 0.6rem; font-size: 1.1rem;'>●</p>",
-                        unsafe_allow_html=True)
-        with col_name:
-            if st.button(
-                f"{topic['name']} ({count})",
-                key=f"sel_{tid}",
-                use_container_width=True,
-                type="primary" if is_selected else "secondary",
-            ):
-                st.session_state.selected_topic = tid
-                st.rerun()
-        with col_sg:
-            if st.button("📖", key=f"sg_{tid}", help=f"Study Guide for {topic['name']}"):
-                st.session_state.active_study_guide_topic = tid
-                st.session_state.active_audio_topic = None
-                st.rerun()
-        with col_aud:
-            if st.button("🎙️", key=f"aud_{tid}", help=f"Audio Overview for {topic['name']}"):
-                st.session_state.active_audio_topic = tid
-                st.session_state.active_study_guide_topic = None
-                st.rerun()
+    # Study Guide and Audio Overview act on the selected topic: labelled buttons instead of tiny icons per row
+    sel_tid = st.session_state.selected_topic
+    if sel_tid in topics:
+        if st.button("Study Guide", key=f"sg_{sel_tid}", icon=":material/menu_book:", use_container_width=True,
+                     help=f"Study Guide for {topics[sel_tid]['name']}"):
+            st.session_state.active_study_guide_topic = sel_tid
+            st.session_state.active_audio_topic = None
+            st.rerun()
+        if st.button("Audio Overview", key=f"aud_{sel_tid}", icon=":material/podcasts:", use_container_width=True,
+                     help=f"Audio Overview for {topics[sel_tid]['name']}"):
+            st.session_state.active_audio_topic = sel_tid
+            st.session_state.active_study_guide_topic = None
+            st.rerun()
 
     # New Topic Form
-    with st.expander("➕ New Topic"):
+    with st.expander("New topic", icon=":material/add:"):
         new_topic_name = st.text_input("Topic Name", key="sidebar_new_topic_input")
         if st.button("Create Topic", key="btn_create_topic", use_container_width=True):
             if new_topic_name.strip():
@@ -404,7 +255,7 @@ with st.sidebar:
         sg_topic = topics.get(sg_tid)
         if sg_topic:
             st.markdown("---")
-            with st.expander(f"📖 Study Guide: {sg_topic['name']}", expanded=True):
+            with st.expander(f"Study Guide: {sg_topic['name']}", expanded=True, icon=":material/menu_book:"):
                 # Close button
                 if st.button("Close Guide", key="close_sg"):
                     st.session_state.pop(f"sg_{sg_tid}", None)
@@ -424,7 +275,8 @@ with st.sidebar:
 
                 if "Could not generate study guide" not in guide_content and "No sources" not in guide_content:
                     st.download_button(
-                        label="📥 Download as .md",
+                        label="Download as .md",
+                        icon=":material/download:",
                         data=guide_content,
                         file_name=f"{sg_topic['name'].lower().replace(' ', '_')}_study_guide.md",
                         mime="text/markdown",
@@ -438,7 +290,7 @@ with st.sidebar:
         aud_topic = topics.get(aud_tid)
         if aud_topic:
             st.markdown("---")
-            with st.expander(f"🎙️ Audio Overview: {aud_topic['name']}", expanded=True):
+            with st.expander(f"Audio Overview: {aud_topic['name']}", expanded=True, icon=":material/podcasts:"):
                 # Close button
                 if st.button("Close Audio", key="close_aud"):
                     st.session_state.active_audio_topic = None
@@ -467,7 +319,7 @@ with st.sidebar:
     st.markdown("---")
 
     # Knowledge Base Sources
-    st.markdown("### 📎 Sources in Active Topic")
+    st.markdown("#### Sources")
 
     # Filter sources list by active topic
     active_tid = st.session_state.selected_topic
@@ -483,40 +335,31 @@ with st.sidebar:
     if filtered_sources:
         for i, source in enumerate(filtered_sources):
             icon = {
-                "pdf": "📄", "youtube": "🎥", "web": "🌐", "note": "📝"
-            }.get(source.get("source_type", ""), "📎")
+                "pdf": "picture_as_pdf", "youtube": "smart_display", "web": "language", "note": "edit_note"
+            }.get(source.get("source_type", ""), "draft")
 
-            col1, col2 = st.columns([4, 1])
+            col1, col2 = st.columns([5, 1], vertical_alignment="center")
             with col1:
-                st.markdown(f"""
-                <div class="source-card">
-                    <div class="source-type">{icon} {source.get('source_type', 'unknown').upper()}</div>
-                    <div class="source-title">{source.get('title', 'Untitled')[:50]}</div>
-                    <div class="source-time">{source.get('created_at', '')[:16]}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f":material/{icon}: {source.get('title', 'Untitled')[:50]}")
+                added = source.get("created_at", "")[:16].replace("T", " ")
+                st.caption(f"{source.get('source_type', 'unknown')} · {added}")
 
             with col2:
-                if st.button("🗑️", key=f"forget_{active_tid}_{i}", help="Remove this source"):
+                if st.button(":material/delete:", key=f"forget_{active_tid}_{i}", help="Remove this source",
+                             type="tertiary"):
                     with st.spinner("Removing..."):
                         api("DELETE", f"/sources/{source['id']}")
                     st.rerun()
 
         if active_tid == "all_topics":
             st.markdown("---")
-            if st.button("🗑️ Forget Everything", use_container_width=True, type="secondary"):
+            if st.button("Forget everything", icon=":material/delete_forever:", use_container_width=True):
                 with st.spinner("Clearing all knowledge..."):
                     api("DELETE", "/sources")
                 st.session_state.chat_history = []
                 st.rerun()
     else:
-        st.caption("No sources in this topic.")
-        st.markdown(
-            '<div style="color: #484f58; font-size: 13px;">'
-            "Use the <b>📥 Ingest</b> tab to add material."
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        st.caption("No sources in this topic. Use the **Ingest Material** tab to add some.")
 
 
 # ---------------------------------------------------------------------------
@@ -524,19 +367,15 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 # Hero header
-st.markdown("""
-<div class="hero-header">
-    <h1>🧠 StudyMind</h1>
-    <p>Ingest study material • Ask questions • Discover connections</p>
-</div>
-""", unsafe_allow_html=True)
+st.title("StudyMind", anchor=False)
+st.caption("Ingest study material · Ask questions · Discover connections")
 
 # Main tabs
 tab_ingest, tab_agent, tab_ask, tab_connect = st.tabs([
-    "📥 Ingest Material",
-    "🤖 Agent",
-    "💬 Ask Questions",
-    "🔗 Connect Topics",
+    ":material/upload_file: Ingest Material",
+    ":material/smart_toy: Agent",
+    ":material/forum: Ask Questions",
+    ":material/hub: Connect Topics",
 ])
 
 
@@ -548,8 +387,8 @@ with tab_ingest:
     # 1. Interactive Topic Suggestion Banner
     if st.session_state.suggested_topic:
         sug = st.session_state.suggested_topic
-        st.info(f"💡 **Suggested Topic:** The content from **{sug['source_title']}** "
-                f"seems to belong to topic **'{sug['name']}'**.")
+        st.info(f"**Suggested topic:** The content from **{sug['source_title']}** "
+                f"seems to belong to topic **'{sug['name']}'**.", icon=":material/lightbulb:")
         col_yes, col_no = st.columns(2)
         with col_yes:
             if st.button("Add to suggested Topic", key="accept_suggestion", use_container_width=True, type="primary"):
@@ -571,7 +410,7 @@ with tab_ingest:
     # 2. Topic Selector for Ingestion
     current_topics = topics
     topic_options = {t["name"]: tid for tid, t in current_topics.items()}
-    topic_list = list(topic_options.keys()) + ["➕ New Topic..."]
+    topic_list = list(topic_options.keys()) + ["New topic…"]
 
     # Locate index of currently active topic in sidebar to default to it
     active_tid = st.session_state.selected_topic
@@ -589,7 +428,7 @@ with tab_ingest:
     )
 
     ingest_topic_id = None
-    if selected_option == "➕ New Topic...":
+    if selected_option == "New topic…":
         new_t_name = st.text_input("New Topic Name:", key="ingest_new_topic_name_input")
         if new_t_name.strip():
             # Check if name already exists
@@ -616,7 +455,7 @@ with tab_ingest:
 
     # --- PDF Upload ---
     with ingest_col1:
-        st.markdown("#### 📄 Upload PDF")
+        st.markdown("#### Upload PDF")
         uploaded_file = st.file_uploader(
             "Choose a PDF file",
             type=["pdf"],
@@ -624,12 +463,12 @@ with tab_ingest:
             label_visibility="collapsed",
         )
         if uploaded_file is not None:
-            if st.button("📄 Ingest PDF", key="btn_ingest_pdf", use_container_width=True):
+            if st.button("Ingest PDF", key="btn_ingest_pdf", icon=":material/upload:", use_container_width=True):
                 form = {"title": uploaded_file.name}
                 if ingest_topic_id:
                     form["topic_id"] = ingest_topic_id
 
-                with st.spinner("📄 Extracting, chunking & indexing..."):
+                with st.spinner("Extracting, chunking and indexing…"):
                     result = api(
                         "POST",
                         "/ingest/pdf",
@@ -639,21 +478,22 @@ with tab_ingest:
 
                 if result["status"] == "success":
                     st.success(
-                        f"✅ Ingested **{result['title']}** "
+                        f"Ingested **{result['title']}** "
                         f"({result.get('page_count', '?')} pages)",
-                        icon="📄",
+                        icon=":material/check_circle:",
                     )
                     if result.get("figures_queued"):
                         if st.session_state.health["vision"]["ok"]:
-                            st.info(f"🖼️ {result['figures_queued']} figures queued for captioning — "
-                                    "searchable in a few minutes.")
+                            st.info(f"{result['figures_queued']} figures queued for captioning — "
+                                    "searchable in a few minutes.", icon=":material/image:")
                         else:
-                            st.warning(f"🖼️ {result['figures_queued']} figures are waiting for the vision model: "
-                                       f"{st.session_state.health['vision']['error']}")
+                            st.warning(f"{result['figures_queued']} figures are waiting for the vision model: "
+                                       f"{st.session_state.health['vision']['error']}",
+                                       icon=":material/image:")
                     # Trigger AI topic suggestion
                     sug = suggest(result["excerpt"])
                     if sug:
-                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.toast(f"Suggested topic: {sug}", icon=":material/lightbulb:")
                         st.session_state.suggested_topic = {
                             "name": sug,
                             "source_id": result["source_id"],
@@ -661,12 +501,12 @@ with tab_ingest:
                         }
                     st.rerun()
                 else:
-                    st.error(f"❌ {result.get('error', 'Unknown error')}")
+                    st.error(result.get("error", "Unknown error"), icon=":material/error:")
 
         st.markdown("---")
 
         # --- YouTube URL ---
-        st.markdown("#### 🎥 YouTube Video")
+        st.markdown("#### YouTube Video")
         yt_url = st.text_input(
             "YouTube URL",
             placeholder="https://www.youtube.com/watch?v=...",
@@ -674,16 +514,16 @@ with tab_ingest:
             label_visibility="collapsed",
         )
         if yt_url:
-            if st.button("🎥 Ingest YouTube", key="btn_ingest_yt", use_container_width=True):
-                with st.spinner("🎥 Fetching transcript & indexing..."):
+            if st.button("Ingest YouTube", key="btn_ingest_yt", icon=":material/upload:", use_container_width=True):
+                with st.spinner("Fetching transcript and indexing…"):
                     result = api("POST", "/ingest/youtube", json={"url": yt_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
-                    st.success(f"✅ Ingested **{result['title']}**", icon="🎥")
+                    st.success(f"Ingested **{result['title']}**", icon=":material/check_circle:")
                     # Trigger AI topic suggestion
                     sug = suggest(result["excerpt"])
                     if sug:
-                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.toast(f"Suggested topic: {sug}", icon=":material/lightbulb:")
                         st.session_state.suggested_topic = {
                             "name": sug,
                             "source_id": result["source_id"],
@@ -691,11 +531,11 @@ with tab_ingest:
                         }
                     st.rerun()
                 else:
-                    st.error(f"❌ {result.get('error', 'Unknown error')}")
+                    st.error(result.get("error", "Unknown error"), icon=":material/error:")
 
     # --- Web Article ---
     with ingest_col2:
-        st.markdown("#### 🌐 Web Article")
+        st.markdown("#### Web Article")
         web_url = st.text_input(
             "Article URL",
             placeholder="https://example.com/article",
@@ -703,16 +543,16 @@ with tab_ingest:
             label_visibility="collapsed",
         )
         if web_url:
-            if st.button("🌐 Ingest Article", key="btn_ingest_web", use_container_width=True):
-                with st.spinner("🌐 Extracting article & indexing..."):
+            if st.button("Ingest Article", key="btn_ingest_web", icon=":material/upload:", use_container_width=True):
+                with st.spinner("Extracting article and indexing…"):
                     result = api("POST", "/ingest/url", json={"url": web_url, "topic_id": ingest_topic_id})
 
                 if result["status"] == "success":
-                    st.success(f"✅ Ingested **{result['title'][:60]}**", icon="🌐")
+                    st.success(f"Ingested **{result['title'][:60]}**", icon=":material/check_circle:")
                     # Trigger AI topic suggestion
                     sug = suggest(result["excerpt"])
                     if sug:
-                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.toast(f"Suggested topic: {sug}", icon=":material/lightbulb:")
                         st.session_state.suggested_topic = {
                             "name": sug,
                             "source_id": result["source_id"],
@@ -720,12 +560,12 @@ with tab_ingest:
                         }
                     st.rerun()
                 else:
-                    st.error(f"❌ {result.get('error', 'Unknown error')}")
+                    st.error(result.get("error", "Unknown error"), icon=":material/error:")
 
         st.markdown("---")
 
         # --- Pasted Notes ---
-        st.markdown("#### 📝 Paste Notes")
+        st.markdown("#### Paste Notes")
         note_title = st.text_input(
             "Note title",
             placeholder="e.g. Lecture 3: Transformer Architecture",
@@ -738,8 +578,8 @@ with tab_ingest:
             key="note_text_input",
         )
         if note_text:
-            if st.button("📝 Ingest Notes", key="btn_ingest_note", use_container_width=True):
-                with st.spinner("📝 Indexing notes..."):
+            if st.button("Ingest Notes", key="btn_ingest_note", icon=":material/upload:", use_container_width=True):
+                with st.spinner("Indexing notes…"):
                     result = api("POST", "/ingest/text", json={
                         "text": note_text,
                         "title": note_title or "Untitled Note",
@@ -747,11 +587,11 @@ with tab_ingest:
                     })
 
                 if result["status"] == "success":
-                    st.success(f"✅ Ingested **{result['title']}**", icon="📝")
+                    st.success(f"Ingested **{result['title']}**", icon=":material/check_circle:")
                     # Trigger AI topic suggestion
                     sug = suggest(result["excerpt"])
                     if sug:
-                        st.toast(f"💡 Suggested topic: {sug}")
+                        st.toast(f"Suggested topic: {sug}", icon=":material/lightbulb:")
                         st.session_state.suggested_topic = {
                             "name": sug,
                             "source_id": result["source_id"],
@@ -759,12 +599,12 @@ with tab_ingest:
                         }
                     st.rerun()
                 else:
-                    st.error(f"❌ {result.get('error', 'Unknown error')}")
+                    st.error(result.get("error", "Unknown error"), icon=":material/error:")
 
 
 # ========================== TAB: AGENT ==========================
 with tab_agent:
-    st.markdown("### 🤖 Study Agent")
+    st.markdown("### Study Agent")
     st.caption("One chat that decides what to do: answer, explain, or connect topics. "
                "It retries weak searches and checks its answer against your sources.")
 
@@ -777,7 +617,7 @@ with tab_agent:
     # A connect turn clears the picker; otherwise every later message would route to connect
     if st.session_state.pop("agent_connect_reset", False):
         st.session_state.agent_connect = []
-    col_connect, col_new = st.columns([3, 1])
+    col_connect, col_new = st.columns([3, 1], vertical_alignment="bottom")
     with col_connect:
         connect_with = st.multiselect(
             "Connect with… (optional, one message)",
@@ -787,8 +627,8 @@ with tab_agent:
             help="Pick two topics to ask how they relate.",
         )
     with col_new:
-        st.markdown("<div style='margin-top: 1.7rem;'></div>", unsafe_allow_html=True)
-        if st.button("🆕 New conversation", key="agent_new", use_container_width=True):
+        if st.button("New conversation", key="agent_new", icon=":material/add_comment:",
+                     use_container_width=True):
             st.session_state.agent_thread_id = str(uuid.uuid4())
             st.session_state.agent_messages = []
             st.rerun()
@@ -867,12 +707,12 @@ with tab_agent:
 
 # ========================== TAB 2: ASK ==========================
 with tab_ask:
-    st.markdown("### 💬 Ask Your Study Material")
+    st.markdown("### Ask Your Study Material")
     st.caption("Ask questions and get answers synthesized across all your ingested sources.")
 
     # Check if we have sources
     if not sources:
-        st.info("📚 Ingest some study material first using the **Ingest** tab.", icon="💡")
+        st.info("Ingest some study material first using the **Ingest Material** tab.", icon=":material/info:")
     else:
         current_topics = topics
         ask_options = {"All Topics": "all_topics"}
@@ -887,7 +727,7 @@ with tab_ask:
             if sb_name in ask_options:
                 default_ask_idx = list(ask_options.keys()).index(sb_name)
 
-        col_scope, col_cross = st.columns([2, 2])
+        col_scope, col_cross = st.columns(2, vertical_alignment="bottom")
         with col_scope:
             ask_scope_name = st.selectbox("Ask about:", list(ask_options.keys()), index=default_ask_idx)
             selected_ask_tid = ask_options[ask_scope_name]
@@ -896,8 +736,7 @@ with tab_ask:
             # Cross-topic search is only available when a specific topic is selected
             enable_cross = False
             if selected_ask_tid != "all_topics":
-                st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
-                enable_cross = st.checkbox("🔍 Find connections across topics", value=False)
+                enable_cross = st.checkbox("Find connections across topics", value=False)
 
         st.markdown("---")
 
@@ -905,17 +744,17 @@ with tab_ask:
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
                 if msg.get("primary_section") or msg.get("cross_section"):
-                    st.markdown("### 🎯 From your topic")
+                    st.markdown("#### From your topic")
                     st.markdown(msg["primary_section"])
                     if msg.get("cross_section"):
-                        st.markdown("### 🔗 Connected from other topics")
+                        st.markdown("#### Connected from other topics")
                         st.markdown(msg["cross_section"])
                 else:
                     st.markdown(msg["content"])
 
                 _render_citations(msg.get("citations", []), msg.get("content", ""))
                 if msg.get("sources") and not msg.get("citations"):
-                    with st.expander("📎 Sources"):
+                    with st.expander("Sources", icon=":material/attach_file:"):
                         for src in msg["sources"]:
                             st.caption(src)
 
@@ -940,12 +779,12 @@ with tab_ask:
                     mode = "cross" if enable_cross else "scoped"
                     body = {"question": question, "mode": mode, "topic_id": selected_ask_tid}
                 if body["mode"] == "cross":
-                    with st.spinner("🤔 Searching your material..."):
+                    with st.spinner("Searching your material…"):
                         result = api("POST", "/ask", json=body)
                 else:
                     result, box, buffer = None, st.empty(), ""
                     try:
-                        with st.spinner("🤔 Searching your material..."), httpx.stream(
+                        with st.spinner("Searching your material…"), httpx.stream(
                             "POST", f"{settings.api_url}/ask/stream", json=body, timeout=900
                         ) as resp:
                             if resp.status_code >= 400:
@@ -972,7 +811,7 @@ with tab_ask:
 
                 if result.get("error"):
                     st.error(result["error"])
-                    answer_text = f"⚠️ Error: {result['error']}"
+                    answer_text = f"Error: {result['error']}"
                     st.session_state.chat_history.append({
                         "role": "assistant",
                         "content": answer_text,
@@ -983,9 +822,9 @@ with tab_ask:
                     
                     if result.get("primary_section") or result.get("cross_section"):
                         # Custom render for cross-topic synthesis
-                        st.markdown(f"### 🎯 From your topic ({ask_scope_name})")
+                        st.markdown(f"#### From your topic ({ask_scope_name})")
                         st.markdown(result["primary_section"])
-                        st.markdown("### 🔗 Connected from other topics")
+                        st.markdown("#### Connected from other topics")
                         if result.get("cross_section"):
                             st.markdown(result["cross_section"])
                         else:
@@ -995,7 +834,7 @@ with tab_ask:
 
                     _render_citations(result.get("citations", []), answer_text)
                     if result.get("sources") and not result.get("citations"):
-                        with st.expander("📎 Sources"):
+                        with st.expander("Sources", icon=":material/attach_file:"):
                             for src in result["sources"]:
                                 st.caption(src)
 
@@ -1014,7 +853,7 @@ with tab_ask:
 
         # Topic summary section
         st.markdown("---")
-        st.markdown("### 📋 Topic Summary")
+        st.markdown("### Topic Summary")
         st.caption("Get a cross-source summary for any topic.")
 
         summary_topic = st.text_input(
@@ -1023,8 +862,9 @@ with tab_ask:
             key="summary_topic_input",
         )
         if summary_topic:
-            if st.button("📋 Generate Summary", key="btn_summarize", use_container_width=True):
-                with st.spinner(f"📋 Summarizing '{summary_topic}'..."):
+            if st.button("Generate Summary", key="btn_summarize", icon=":material/summarize:",
+                         use_container_width=True):
+                with st.spinner(f"Summarizing '{summary_topic}'…"):
                     result = api("POST", "/summarize", json={"topic": summary_topic})
 
                 if result.get("error"):
@@ -1036,7 +876,7 @@ with tab_ask:
 
 # ========================== TAB 3: CONNECT TOPICS ==========================
 with tab_connect:
-    st.markdown("### 🔗 Connect Topics")
+    st.markdown("### Connect Topics")
     st.caption(
         "Discover how two topics are connected through your study material. "
         "This traverses the knowledge graph to find relationship paths."
@@ -1044,9 +884,9 @@ with tab_connect:
 
     # Check if we have sources
     if not sources:
-        st.info("📚 Ingest some study material first using the **Ingest** tab.", icon="💡")
+        st.info("Ingest some study material first using the **Ingest Material** tab.", icon=":material/info:")
     else:
-        col_a, col_mid, col_b = st.columns([2, 1, 2])
+        col_a, col_b = st.columns(2)
 
         with col_a:
             topic_a = st.text_input(
@@ -1054,12 +894,6 @@ with tab_connect:
                 placeholder="e.g. transformers",
                 key="topic_a_input",
                 label_visibility="visible",
-            )
-
-        with col_mid:
-            st.markdown(
-                '<div style="text-align: center; padding-top: 2rem; font-size: 1.5rem; color: #7C5CFC;">⟷</div>',
-                unsafe_allow_html=True,
             )
 
         with col_b:
@@ -1072,12 +906,13 @@ with tab_connect:
 
         if topic_a and topic_b:
             if st.button(
-                "🔗 Find Connection",
+                "Find Connection",
                 key="btn_connect",
+                icon=":material/hub:",
                 use_container_width=True,
                 type="primary",
             ):
-                with st.spinner(f"🔗 Finding connections between '{topic_a}' and '{topic_b}'..."):
+                with st.spinner(f"Finding connections between '{topic_a}' and '{topic_b}'…"):
                     result = api("POST", "/connect", json={"topic_a": topic_a, "topic_b": topic_b})
 
                 if result.get("error"):
@@ -1085,33 +920,28 @@ with tab_connect:
                 else:
                     # Graph visualization
                     if result.get("html_graph"):
-                        st.markdown(
-                            '<div class="graph-container">',
-                            unsafe_allow_html=True,
-                        )
                         st.components.v1.html(
                             result["html_graph"],
                             height=540,
                             scrolling=False,
                         )
-                        st.markdown("</div>", unsafe_allow_html=True)
 
                         # Legend
                         st.markdown("""
                         <div style="display: flex; gap: 16px; justify-content: center; padding: 8px 0; flex-wrap: wrap;">
-                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e;">
+                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; opacity: 0.75;">
                                 <span style="width: 10px; height: 10px; border-radius: 50%; background: #7C5CFC; display: inline-block;"></span> Topic
                             </span>
-                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e;">
+                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; opacity: 0.75;">
                                 <span style="width: 10px; height: 10px; border-radius: 50%; background: #1E90FF; display: inline-block;"></span> Shared Concept
                             </span>
-                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e;">
+                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; opacity: 0.75;">
                                 <span style="width: 10px; height: 10px; border-radius: 50%; background: #FF6B6B; display: inline-block;"></span> PDF
                             </span>
-                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e;">
+                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; opacity: 0.75;">
                                 <span style="width: 10px; height: 10px; border-radius: 50%; background: #2ED573; display: inline-block;"></span> Web
                             </span>
-                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e;">
+                            <span style="display: flex; align-items: center; gap: 4px; font-size: 12px; opacity: 0.75;">
                                 <span style="width: 10px; height: 10px; border-radius: 50%; background: #FFA502; display: inline-block;"></span> Note
                             </span>
                         </div>
@@ -1120,18 +950,18 @@ with tab_connect:
                     # Connection summary
                     if result.get("summary"):
                         st.markdown("---")
-                        st.markdown("#### 📖 Connection Explained")
+                        st.markdown("#### Connection Explained")
                         st.markdown(result["summary"])
 
                     # Raw graph data (expandable)
                     if result.get("nodes"):
                         n_nodes, n_edges = len(result["nodes"]), len(result["edges"])
-                        with st.expander(f"🔍 Graph Details ({n_nodes} nodes, {n_edges} edges)"):
+                        with st.expander(f"Graph details ({n_nodes} nodes, {n_edges} edges)"):
                             st.markdown("**Nodes:**")
                             for node in result["nodes"]:
                                 st.caption(
                                     f"• {node['label']} "
-                                    f"({'🔵 ' + node['source_type'] if node.get('source_type') else ''})"
+                                    f"({node['source_type'] if node.get('source_type') else ''})"
                                 )
                             st.markdown("**Edges:**")
                             for edge in result["edges"]:
