@@ -1,0 +1,10 @@
+.venv
+data
+.git
+eval/corpus/*.pdf
+eval/results
+**/__pycache__
+.pytest_cache
+.superpowers
+*.pdf
+.env
