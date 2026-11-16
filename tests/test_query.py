@@ -336,8 +336,20 @@ async def test_cache_cleared_by_delete_and_move(counted):
     await query.ask("What is attention?")
     assert len(counted) == n + 1
     assert topics.delete_source(src)
-    await query.ask("What is attention?")
-    assert len(counted) == n + 1  # nothing left: no-material answer, no LLM call
+    res = await query.ask("What is attention?")
+    assert res["citations"] == []  # a stale cached answer would still cite the deleted source
+    assert len(counted) == n + 1  # nothing left: no LLM call
+
+
+@pytest.mark.asyncio
+async def test_cache_evicts_oldest(counted, monkeypatch):
+    monkeypatch.setattr(query, "CACHE_SIZE", 2)
+    await _ingest()
+    for q in ("one?", "two?", "three?"):
+        await query.ask(q)
+    n = len(counted)
+    await query.ask("one?")
+    assert len(counted) == n + 1
 
 
 @pytest.mark.asyncio
