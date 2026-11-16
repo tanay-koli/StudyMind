@@ -5,7 +5,7 @@ from core.db import ConceptEdge, ConceptExtraction, session
 from core.parse import Block
 
 
-def plant(texts: list[str], edges: dict[int, list[tuple[str, str, str]]], topic: str = "Biology") -> tuple[str, list[int]]:
+def plant(texts: list[str], edges: dict[int, list[tuple[str, str, str]]], topic: str = "Biology") -> tuple[str, list[int]]:  # noqa: E501
     """Index one chunk per text in a new topic (page = index + 1) and plant (head, relation, tail) edges.
 
     Returns (topic_id, chunk ids in text order).

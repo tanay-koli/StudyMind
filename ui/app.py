@@ -23,7 +23,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core.config import settings, get_cloud_status_emoji
+from core.config import settings, get_cloud_status_emoji  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ def _render_citations(citations: list[dict], answer: str = "") -> None:
                                c["url"])
     cited = [(n, c) for n, c in enumerate(citations, start=1) if c.get("image_url") and f"[{n}]" in answer][:2]
     for n, c in cited:
-        st.image(settings.api_url + c["image_url"], caption=f"[{n}] {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else ""))
+        st.image(settings.api_url + c["image_url"], caption=f"[{n}] {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else ""))  # noqa: E501
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +335,7 @@ with st.sidebar:
 
         col_dot, col_name, col_sg, col_aud = st.columns([0.15, 0.55, 0.15, 0.15])
         with col_dot:
-            st.markdown(f"<p style='color: {topic['color']}; margin-top: 0.6rem; font-size: 1.1rem;'>●</p>", unsafe_allow_html=True)
+            st.markdown(f"<p style='color: {topic['color']}; margin-top: 0.6rem; font-size: 1.1rem;'>●</p>", unsafe_allow_html=True)  # noqa: E501
         with col_name:
             if st.button(
                 f"{topic['name']} ({count})",
@@ -426,7 +426,7 @@ with st.sidebar:
                 if wav := st.session_state.audio_wav[1]:
                     st.audio(wav, format="audio/wav")
                 else:
-                    st.info("Audio unavailable (no script yet, or pyttsx3 not installed). Showing the script text only.")
+                    st.info("Audio unavailable (no script yet, or pyttsx3 not installed). Showing the script text only.")  # noqa: E501
 
                 st.markdown("**Podcast Transcript:**")
                 st.caption(script_content)
@@ -515,7 +515,7 @@ with tab_ingest:
     # 1. Interactive Topic Suggestion Banner
     if st.session_state.suggested_topic:
         sug = st.session_state.suggested_topic
-        st.info(f"💡 **Suggested Topic:** The content from **{sug['source_title']}** seems to belong to topic **'{sug['name']}'**.")
+        st.info(f"💡 **Suggested Topic:** The content from **{sug['source_title']}** seems to belong to topic **'{sug['name']}'**.")  # noqa: E501
         col_yes, col_no = st.columns(2)
         with col_yes:
             if st.button("Add to suggested Topic", key="accept_suggestion", use_container_width=True, type="primary"):
@@ -1045,7 +1045,7 @@ with tab_connect:
                                 <span style="width: 10px; height: 10px; border-radius: 50%; background: #FFA502; display: inline-block;"></span> Note
                             </span>
                         </div>
-                        """, unsafe_allow_html=True)
+                        """, unsafe_allow_html=True)  # noqa: E501
 
                     # Connection summary
                     if result.get("summary"):
@@ -1055,7 +1055,7 @@ with tab_connect:
 
                     # Raw graph data (expandable)
                     if result.get("nodes"):
-                        with st.expander(f"🔍 Graph Details ({len(result['nodes'])} nodes, {len(result['edges'])} edges)"):
+                        with st.expander(f"🔍 Graph Details ({len(result['nodes'])} nodes, {len(result['edges'])} edges)"):  # noqa: E501
                             st.markdown("**Nodes:**")
                             for node in result["nodes"]:
                                 st.caption(

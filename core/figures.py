@@ -80,7 +80,7 @@ async def caption_pending() -> int:
             log.warning("figure crop %s is missing; dropping it", row.image_path)
             _drop(fid)
             continue
-        prompt = CAPTION_PROMPT + (f"\nIt appears under the heading: {row.section_heading}" if row.section_heading else "")
+        prompt = CAPTION_PROMPT + (f"\nIt appears under the heading: {row.section_heading}" if row.section_heading else "")  # noqa: E501
         try:
             caption = " ".join((await llm.complete(prompt, system=CAPTION_SYSTEM, images=[png],
                                                    model=settings.vision_model, timeout=180)).split())

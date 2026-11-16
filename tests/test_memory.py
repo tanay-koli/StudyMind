@@ -42,7 +42,7 @@ async def test_update_applies_ops(replies):
 @pytest.mark.asyncio
 async def test_update_skips_invalid_ops(replies):
     replies += [{"ops": [{"op": "ADD", "fact": "Keep me"}]},
-                {"ops": [{"op": "UPDATE", "id": 99, "fact": "x"}, {"op": "ADD", "fact": "  "}, {"op": "MERGE", "fact": "y"},
+                {"ops": [{"op": "UPDATE", "id": 99, "fact": "x"}, {"op": "ADD", "fact": "  "}, {"op": "MERGE", "fact": "y"},  # noqa: E501
                          {"op": "DELETE"}]},
                 ValueError("no json")]
     await memory.update("I keep notes")

@@ -95,7 +95,7 @@ def build(results: dict[str, dict], dataset: dict[str, dict], labels: list[dict]
         "| A | Cognee baseline (current app) | not measured (Cognee removed in Phase 1) | | | | | | |",
     ]
     for name, s in stats.items():
-        tags = ([f"n={s['n']}/{len(dataset)}"] if s["n"] != len(dataset) else []) +                [f"{k}: {s[k]}" for k in ("stale", "errors") if s[k]]
+        tags = ([f"n={s['n']}/{len(dataset)}"] if s["n"] != len(dataset) else []) +                [f"{k}: {s[k]}" for k in ("stale", "errors") if s[k]]  # noqa: E501
         label = name + (f" ({', '.join(tags)})" if tags else "")
         out.append(f"| {label} | {CONFIGS[name]['change']} | {_pct(s['recall5'])} | {_num(s['mrr'], '.2f')} | "
                    f"{_pct(s['faithfulness'])} | {_pct(s['correctness'])} | {_pct(s['refusal'])} | "

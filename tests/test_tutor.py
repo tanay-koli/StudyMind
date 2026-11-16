@@ -93,7 +93,7 @@ async def test_review_targets_only_weak_or_due_in_order():
     _mastery("beta", "partial", 2.36, tomorrow, wrong=1)
     _mastery("gamma", "correct", 2.6, tomorrow)
     _mastery("delta", "correct", 2.6, TODAY)  # due today
-    assert await tutor.pick_targets(tid, review=True, today=TODAY) == [("delta", ids[3]), ("alpha", ids[0]), ("beta", ids[1])]
+    assert await tutor.pick_targets(tid, review=True, today=TODAY) == [("delta", ids[3]), ("alpha", ids[0]), ("beta", ids[1])]  # noqa: E501
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_generate_valid_mcq_and_short(llm_script):
                           {"question": "Why are enzymes useful?", "answer": "They lower activation energy.",
                            "difficulty": "medium"}]
     q = await tutor.generate_question("enzyme", ids[0], "mcq", facts="About the student:\n- likes short answers")
-    assert (q.kind, q.options[0], q.answer, q.concept, q.chunk_id) == ("mcq", "Activation energy", "A", "enzyme", ids[0])
+    assert (q.kind, q.options[0], q.answer, q.concept, q.chunk_id) == ("mcq", "Activation energy", "A", "enzyme", ids[0])  # noqa: E501
     assert q.citation["chunk_id"] == ids[0] and "lower activation energy" in q.citation["text"]
     assert "likes short answers" in llm_script["calls"][0][1]
     short = await tutor.generate_question("enzyme", ids[0], "short")

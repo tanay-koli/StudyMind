@@ -308,10 +308,10 @@ async def connect_topics(topic_a: str, topic_b: str) -> dict:
 
             def cite(e) -> str:
                 h = by_chunk[e.chunk_id]
-                return f"{e.head} {e.relation} {e.tail} (📄 {h.source_title}" + (f" · p.{h.page}" if h.page else "") + ")"
+                return f"{e.head} {e.relation} {e.tail} (📄 {h.source_title}" + (f" · p.{h.page}" if h.page else "") + ")"  # noqa: E501
 
             def node(label: str, stype: str, title: str) -> dict:
-                return {"id": _node_id(label), "label": label[:50], "color": SOURCE_COLORS.get(stype, SOURCE_COLORS["default"]),
+                return {"id": _node_id(label), "label": label[:50], "color": SOURCE_COLORS.get(stype, SOURCE_COLORS["default"]),  # noqa: E501
                         "source_type": stype, "title": title}
 
             nodes = [node(topic_a, "topic", f"Topic: {topic_a}"), node(topic_b, "topic", f"Topic: {topic_b}")]

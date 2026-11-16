@@ -1,0 +1,6 @@
+line-length = 120
+target-version = "py313"
+extend-exclude = [".venv", "data", "lib", "eval/corpus"]
+
+[lint]
+select = ["E", "F"]

@@ -157,7 +157,7 @@ class TestYouTubeTimestamps:
         from core import chunking
         from core.ingest import ingest_youtube
 
-        snippets = [SimpleNamespace(text="alpha beta", start=0.0, duration=3), SimpleNamespace(text="gamma", start=12.5, duration=3),
+        snippets = [SimpleNamespace(text="alpha beta", start=0.0, duration=3), SimpleNamespace(text="gamma", start=12.5, duration=3),  # noqa: E501
                     SimpleNamespace(text="delta epsilon", start=75.2, duration=3)]
         self._fake_api(monkeypatch, snippets)
         result = await ingest_youtube("https://youtu.be/abc123")
