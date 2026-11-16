@@ -83,24 +83,23 @@ class LLMClient:
         resp = await litellm.acompletion(model=model, messages=messages, **kwargs)
         latency = time.perf_counter() - start
 
-        usage = getattr(resp, "usage", None)
+        self._tally(model, getattr(resp, "usage", None), latency)
+        return resp.choices[0].message.content or ""
+
+    def _tally(self, model: str, usage, latency: float, stream: bool = False) -> None:
+        """Add one call to the running totals and log it; one cost rule for complete and stream."""
+        pt = getattr(usage, "prompt_tokens", None) or 0
+        ct = getattr(usage, "completion_tokens", None) or 0
         try:
-            cost = litellm.completion_cost(completion_response=resp)
+            cost = sum(litellm.cost_per_token(model=model, prompt_tokens=pt, completion_tokens=ct))
         except Exception:
             cost = 0.0  # unknown pricing (local models)
         self.usage["calls"] += 1
-        self.usage["prompt_tokens"] += getattr(usage, "prompt_tokens", None) or 0
-        self.usage["completion_tokens"] += getattr(usage, "completion_tokens", None) or 0
+        self.usage["prompt_tokens"] += pt
+        self.usage["completion_tokens"] += ct
         self.usage["cost_usd"] += cost
-        log.info(
-            "llm model=%s prompt_tokens=%s completion_tokens=%s cost_usd=%.6f latency_s=%.2f",
-            model,
-            getattr(usage, "prompt_tokens", None),
-            getattr(usage, "completion_tokens", None),
-            cost,
-            latency,
-        )
-        return resp.choices[0].message.content or ""
+        log.info("llm model=%s prompt_tokens=%s completion_tokens=%s cost_usd=%.6f latency_s=%.2f%s",
+                 model, pt, ct, cost, latency, " stream=1" if stream else "")
 
     async def stream(self, prompt: str, system: str | None = None, **kwargs) -> AsyncIterator[str]:
         """Yield text deltas; usage is tallied once the stream ends."""
@@ -113,21 +112,7 @@ class LLMClient:
             usage = getattr(chunk, "usage", None) or usage
             if chunk.choices and (delta := chunk.choices[0].delta.content):
                 yield delta
-        latency = time.perf_counter() - start
-        pt = getattr(usage, "prompt_tokens", None) or 0
-        ct = getattr(usage, "completion_tokens", None) or 0
-        cost = 0.0  # local models are free; unknown pricing stays 0
-        if not model.startswith("ollama/"):
-            try:
-                cost = sum(litellm.cost_per_token(model=model, prompt_tokens=pt, completion_tokens=ct))
-            except Exception:
-                pass
-        self.usage["calls"] += 1
-        self.usage["prompt_tokens"] += pt
-        self.usage["completion_tokens"] += ct
-        self.usage["cost_usd"] += cost
-        log.info("llm model=%s prompt_tokens=%s completion_tokens=%s cost_usd=%.6f latency_s=%.2f stream=1",
-                 model, pt, ct, cost, latency)
+        self._tally(model, usage, time.perf_counter() - start, stream=True)
 
     async def complete_json(self, prompt: str, system: str | None = None, **kwargs) -> dict:
         """Completion parsed as JSON; returns the first object in the reply."""
