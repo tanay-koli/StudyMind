@@ -6,7 +6,7 @@
 
 > 🖥️ **Local and free, with NotebookLM features** — no cloud account or API key needed. Organizes your material into Notebooks (Topics), generates Study Guides, synthesizes Audio Overview podcasts, and discovers cross-topic connections.
 
-![StudyMind demo](docs/demo.gif)
+<!-- ![StudyMind demo](docs/demo.gif) -->
 
 <sub>`docs/demo.gif` is recorded by the author and added to the repo separately; until then this image does not render.</sub>
 
@@ -108,6 +108,8 @@ docker compose up --build
 ```
 
 Open http://localhost:8501. Compose runs the API, Qdrant (v1.20.0) and the UI; data lives in the `studymind-data` volume and models download to `./data/models`. The containers reach Ollama through `host.docker.internal`.
+
+SQLite data and Qdrant vectors live in two named volumes (`studymind-data`, `qdrant-data`); remove both or neither (`docker compose down -v` removes both).
 
 If the API cannot reach Ollama, Ollama is probably bound to `127.0.0.1` only. Start it with `OLLAMA_HOST=0.0.0.0` and restart it. This exposes Ollama on your whole network: bind it to a specific interface instead, or firewall port 11434.
 
