@@ -378,3 +378,48 @@ async def test_cache_key_includes_settings(counted, monkeypatch):
     monkeypatch.setattr(query.settings, "rerank", not query.settings.rerank)
     await query.ask("What is attention?")
     assert len(counted) == n + 1
+
+
+async def _events(question, topic_id=None):
+    return [e async for e in query.ask_stream(question, topic_id)]
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_yields_citations_tokens_done(counted, monkeypatch):
+    await _ingest()
+
+    async def stream(prompt, system=None, **kw):
+        for t in ("An ", "answer ", "[1]"):
+            yield t
+
+    monkeypatch.setattr(llm, "stream", stream)
+    ev = await _events("What is attention?")
+    names = [n for n, _ in ev]
+    assert names == ["citations", "token", "token", "token", "done"]
+    assert ev[-1][1]["answer"] == "".join(p for n, p in ev if n == "token")
+    assert ev[-1][1]["citations"] == ev[0][1] and ev[0][1]
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_hits_cache_after_ask(counted):
+    await _ingest()
+    a = await query.ask("What is attention?")
+    n = len(counted)
+    ev = await _events("What is attention?")
+    assert len(counted) == n
+    assert [x for x, _ in ev] == ["citations", "token", "done"] and ev[-1][1] == a
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_stores_for_ask(counted):
+    await _ingest()
+    await _events("What is attention?")
+    n = len(counted)
+    await query.ask("What is attention?")
+    assert len(counted) == n
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_no_material(counted):
+    ev = await _events("What is attention?")
+    assert [n for n, _ in ev] == ["done"] and "No results found" in ev[0][1]["answer"] and counted == []

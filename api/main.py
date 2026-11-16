@@ -297,6 +297,25 @@ async def ask(body: AskIn):
     return await query.cross_topic_ask(body.question, body.topic_id, list(topics.load_topics()))
 
 
+@app.post("/ask/stream")
+async def ask_stream(body: AskIn):
+    """Global or scoped Ask as server-sent events: citations, token..., done (or error)."""
+    if body.mode == "cross":
+        raise HTTPException(400, "cross mode is not streamed")
+    topic_id = None
+    if body.mode == "scoped":
+        if not body.topic_id:
+            raise HTTPException(400, "mode 'scoped' needs a topic_id")
+        _require_topic(body.topic_id)
+        topic_id = body.topic_id
+
+    async def events():
+        async for name, data in query.ask_stream(body.question, topic_id):
+            yield f"event: {name}\ndata: {json.dumps(data)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @app.post("/summarize")
 async def summarize(body: SummarizeIn):
     return await query.summarize_topic(body.topic)

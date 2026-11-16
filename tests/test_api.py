@@ -322,3 +322,15 @@ def test_agent_route_streams_token_lines(client, monkeypatch):
     assert toks and ev.index(toks[0]) < ev.index(ev[-1]) and ev[-1]["event"] == "done"
     assert "".join(t["text"] for t in toks) == ev[-1]["answer"] == "A [1]."
     assert all(t["attempt"] == 1 for t in toks)
+
+
+def test_ask_stream_route_sse(client, offline):
+    client.post("/ingest/text", json={"text": "Self-attention...", "title": "Lecture 1", "topic_id": "general"})
+    for body in ({"question": "What is attention?"},
+                 {"question": "What is attention?", "mode": "scoped", "topic_id": "general"}):
+        resp = client.post("/ask/stream", json=body)
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        events = [(b.split("\n")[0][7:], json.loads(b.split("\n")[1][6:])) for b in resp.text.strip().split("\n\n")]
+        names = [n for n, _ in events]
+        assert names[0] == "citations" and names[-1] == "done" and "token" in names
+    assert client.post("/ask/stream", json={"question": "q", "mode": "cross", "topic_id": "general"}).status_code == 400

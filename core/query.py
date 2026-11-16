@@ -16,7 +16,7 @@ import copy
 import re
 from collections import OrderedDict
 from itertools import zip_longest
-from typing import Awaitable, Callable, Optional
+from typing import AsyncIterator, Awaitable, Callable, Optional
 
 from sqlmodel import select
 
@@ -130,36 +130,66 @@ def _fingerprint() -> tuple:
 
 async def _cached(fn_name: str, key: tuple, compute: Callable[[], Awaitable[dict]]) -> dict:
     """Memoise compute() until the material or the settings change; callers get their own copy."""
-    full = (fn_name, *key, _fingerprint(), retrieval.corpus_version())
-    if full in _cache:
-        _cache.move_to_end(full)
-        return copy.deepcopy(_cache[full])
+    full = _full_key(fn_name, key)
+    if (hit := _lookup(full)) is not None:
+        return hit
     result = await compute()
+    _store(full, result)
+    return result
+
+
+def _full_key(fn_name: str, key: tuple) -> tuple:
+    return (fn_name, *key, _fingerprint(), retrieval.corpus_version())
+
+
+def _lookup(full: tuple) -> Optional[dict]:
+    if full not in _cache:
+        return None
+    _cache.move_to_end(full)
+    return copy.deepcopy(_cache[full])
+
+
+def _store(full: tuple, result: dict) -> None:
     # No citations means the empty/no-material message (or an error): retry once material exists
     if not result.get("error") and result["citations"]:
         _cache[full] = copy.deepcopy(result)
         while len(_cache) > CACHE_SIZE:
             _cache.popitem(last=False)
-    return result
 
 
 # ---------------------------------------------------------------------------
 # Q&A
 # ---------------------------------------------------------------------------
 
-async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dict:
+def _blank(topic_id: Optional[str]) -> dict:
+    result = {"answer": "", "sources": [], "citations": [], "search_type": settings.retriever.upper(), "error": None}
+    if topic_id:
+        result["topic_id"] = topic_id
+    return result
+
+
+def _empty_msg(topic_id: Optional[str]) -> str:
+    if topic_id is None:
+        return "No results found. Try ingesting more material or rephrasing your question."
+    return (f"No results found in **{_topic_name(topic_id)}**. "
+            "Try adding more material to this topic or asking a broader question.")
+
+
+def _ask_key(question: str, topic_id: Optional[str]) -> tuple[str, tuple]:
+    return ("ask", (_norm(question),)) if topic_id is None else ("ask_scoped", (_norm(question), topic_id))
+
+
+def _prompt(question: str, context: str) -> str:
+    return f"{context}\n\nQuestion: {question}"
+
+
+async def _answer(question: str, topic_id: Optional[str]) -> dict:
     """Retrieve chunks, then generate a grounded answer that cites them as [n]."""
-    result = {
-        "answer": "",
-        "sources": [],
-        "citations": [],
-        "search_type": settings.retriever.upper(),
-        "error": None,
-    }
+    result = _blank(topic_id)
     try:
         hits = await get_retriever().retrieve(question, topic_id)
         if not hits:
-            result["answer"] = empty_msg
+            result["answer"] = _empty_msg(topic_id)
             return result
         result["sources"] = list(dict.fromkeys(h.source_title for h in hits))
         result["answer"], result["citations"] = await _generate(question, hits)
@@ -171,7 +201,7 @@ async def _answer(question: str, topic_id: Optional[str], empty_msg: str) -> dic
 async def _generate(question: str, hits: list[Hit]) -> tuple[str, list[dict]]:
     """Grounded answer citing hits as [n], and the matching citations."""
     context, citations = _context(hits)
-    return await llm.complete(f"{context}\n\nQuestion: {question}", system=ANSWER_SYSTEM), citations
+    return await llm.complete(_prompt(question, context), system=ANSWER_SYSTEM), citations
 
 
 async def ask(question: str) -> dict:
@@ -180,10 +210,8 @@ async def ask(question: str) -> dict:
     Returns:
         dict with keys: answer, sources, citations, search_type, error
     """
-    return await _cached("ask", (_norm(question),), lambda: _answer(
-        question, None,
-        "No results found. Try ingesting more material or rephrasing your question.",
-    ))
+    name, key = _ask_key(question, None)
+    return await _cached(name, key, lambda: _answer(question, None))
 
 
 async def ask_scoped(question: str, topic_id: str) -> dict:
@@ -192,16 +220,37 @@ async def ask_scoped(question: str, topic_id: str) -> dict:
     Returns:
         dict with keys: answer, sources, citations, search_type, topic_id, error
     """
-    async def compute() -> dict:
-        result = await _answer(
-            question, topic_id,
-            f"No results found in **{_topic_name(topic_id)}**. "
-            "Try adding more material to this topic or asking a broader question.",
-        )
-        result["topic_id"] = topic_id
-        return result
+    name, key = _ask_key(question, topic_id)
+    return await _cached(name, key, lambda: _answer(question, topic_id))
 
-    return await _cached("ask_scoped", (_norm(question), topic_id), compute)
+
+async def ask_stream(question: str, topic_id: Optional[str]) -> AsyncIterator[tuple[str, object]]:
+    """ask/ask_scoped as events: ("citations", list), ("token", str)..., then ("done", dict) or ("error", str)."""
+    try:
+        full = _full_key(*_ask_key(question, topic_id))
+        if (cached := _lookup(full)) is not None:
+            yield "citations", cached["citations"]
+            yield "token", cached["answer"]
+            yield "done", cached
+            return
+        result = _blank(topic_id)
+        hits = await get_retriever().retrieve(question, topic_id)
+        if not hits:
+            result["answer"] = _empty_msg(topic_id)
+            yield "done", result
+            return
+        context, result["citations"] = _context(hits)
+        result["sources"] = list(dict.fromkeys(h.source_title for h in hits))
+        yield "citations", result["citations"]
+        parts = []
+        async for delta in llm.stream(_prompt(question, context), system=ANSWER_SYSTEM):
+            parts.append(delta)
+            yield "token", delta
+        result["answer"] = "".join(parts)
+        _store(full, result)
+        yield "done", result
+    except Exception as exc:
+        yield "error", f"{type(exc).__name__}: {exc}"
 
 
 async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: list) -> dict:
