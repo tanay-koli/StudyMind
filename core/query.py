@@ -150,6 +150,11 @@ def _lookup(full: tuple) -> Optional[dict]:
 
 
 def _store(full: tuple, result: dict) -> None:
+    # Answers from before the material changed can never match again, and may cite deleted text: drop them
+    if (version := retrieval.corpus_version()) != full[-1]:
+        return
+    if any(k[-1] != version for k in _cache):
+        _cache.clear()
     # No citations means the empty/no-material message (or an error): retry once material exists
     if not result.get("error") and result["citations"]:
         _cache[full] = copy.deepcopy(result)

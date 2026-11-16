@@ -17,7 +17,7 @@ from typing import Optional, Protocol
 
 from qdrant_client import QdrantClient, models
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlmodel import func, select
+from sqlmodel import delete, func, select
 
 from core.config import DATA_DIR, settings
 from core.db import Chunk, ChunkMedia, EmbeddingCache, Source, session
@@ -177,11 +177,21 @@ def _search_text(c: Chunk) -> str:
     return f"{c.section_heading}\n{c.text}" if c.section_heading else c.text
 
 
+def _sha(model: str, text: str) -> str:
+    return hashlib.sha256((EMBED_MODELS[model][3] + text).encode()).hexdigest()
+
+
+def forget_embeddings(s, chunks: list[Chunk]) -> None:
+    """Drop the cached vectors of these chunks under every model, in the caller's transaction."""
+    shas = [_sha(m, _search_text(c)) for m in EMBED_MODELS for c in chunks]
+    for i in range(0, len(shas), 500):  # stay under SQLite's bound-variable limit
+        s.exec(delete(EmbeddingCache).where(EmbeddingCache.sha.in_(shas[i:i + 500])))
+
+
 def cached_dense(texts: list[str]) -> list[list[float]]:
     """Document embeddings, embedding only texts not yet cached for the current model."""
     model = settings.embed_model
-    d_prefix = EMBED_MODELS[model][3]
-    shas = [hashlib.sha256((d_prefix + t).encode()).hexdigest() for t in texts]
+    shas = [_sha(model, t) for t in texts]
     with session() as s:
         rows = s.exec(select(EmbeddingCache).where(EmbeddingCache.model == model, EmbeddingCache.sha.in_(shas))).all()
         found = {r.sha: r.vector for r in rows}

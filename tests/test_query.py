@@ -6,7 +6,7 @@ retrieval query is the short question/topic, never the generation instruction.
 
 import pytest
 
-from core import concepts, query, topics
+from core import concepts, query, retrieval, topics
 from core.db import Chunk, ConceptEdge, ConceptExtraction, Source, session
 from core.llm import llm
 from core.retrieval import Hit
@@ -338,6 +338,16 @@ async def test_cache_cleared_by_delete_and_move(counted):
     res = await query.ask("What is attention?")
     assert res["citations"] == []  # a stale cached answer would still cite the deleted source
     assert len(counted) == n + 1  # nothing left: no LLM call
+
+
+@pytest.mark.asyncio
+async def test_cache_drops_old_answers_once_material_changes(counted):
+    src = (await _ingest())["source_id"]
+    await query.ask("What is attention?")
+    topics.delete_source(src)
+    await _ingest()
+    await query.ask("Something else?")
+    assert all(k[-1] == retrieval.corpus_version() for k in query._cache)  # no answer citing deleted text
 
 
 @pytest.mark.asyncio

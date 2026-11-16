@@ -164,7 +164,9 @@ def invalidate_caches(topic_id: str) -> None:
 
 def _purge(s, source_ids: list[int]) -> None:
     """Delete the sources' chunk and figure rows (caller commits, then calls _forget)."""
-    chunk_ids = s.exec(select(Chunk.id).where(Chunk.source_id.in_(source_ids))).all()
+    chunks = s.exec(select(Chunk).where(Chunk.source_id.in_(source_ids))).all()
+    chunk_ids = [c.id for c in chunks]
+    retrieval.forget_embeddings(s, chunks)
     s.exec(delete(ConceptEdge).where(ConceptEdge.chunk_id.in_(chunk_ids)))
     s.exec(delete(ConceptExtraction).where(ConceptExtraction.chunk_id.in_(chunk_ids)))
     s.exec(delete(ChunkMedia).where(ChunkMedia.chunk_id.in_(chunk_ids)))

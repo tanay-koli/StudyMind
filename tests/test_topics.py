@@ -264,6 +264,16 @@ def test_move_source_moves_pending_figures():
         assert s.exec(select(db.PendingFigure.topic_id)).all() == [b]
 
 
+def test_delete_source_forgets_cached_embeddings():
+    sid = topics.add_source("general", "note", "Doc")["id"]
+    retrieval.index_chunks(sid, "general", [Block(1, None, "alpha"), Block(1, "Head", "beta")])
+    with db.session() as s:
+        assert s.exec(select(db.EmbeddingCache)).all()
+    topics.delete_source(sid)
+    with db.session() as s:
+        assert s.exec(select(db.EmbeddingCache)).all() == []
+
+
 def test_failed_delete_keeps_the_source_searchable(monkeypatch):
     from sqlmodel import Session
 
