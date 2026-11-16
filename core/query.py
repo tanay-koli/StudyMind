@@ -24,7 +24,7 @@ from core import concepts
 from core.config import settings
 from core.db import Chunk, session
 from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
-from core.llm import llm
+from core.llm import DATA_RULE, llm, passage
 from core import retrieval
 from core.retrieval import Hit, get_retriever, relevant
 
@@ -32,7 +32,8 @@ CITE_RULES = (
     "You are a study assistant. Answer only from the numbered context passages.\n"
     "Cite the passage for every claim with its number in square brackets, like [2].\n"
 )
-ANSWER_SYSTEM = CITE_RULES + "If the context does not contain the answer, reply exactly: This isn't in your material."
+ANSWER_SYSTEM = (CITE_RULES + DATA_RULE
+                 + "\nIf the context does not contain the answer, reply exactly: This isn't in your material.")
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +61,10 @@ def _media_label(h: Hit) -> str:
 def _context(hits: list[Hit], start: int = 1) -> tuple[str, list[dict]]:
     """Numbered passages for the prompt, and the matching citations."""
     text = "\n\n".join(
-        f"[{n}] {h.source_title}"
-        + (f", p.{h.page}" if h.page else "")
-        + (f" — {h.section}" if h.section else "")
-        + _media_label(h)
-        + f"\n{h.text}"
+        f"[{n}] " + passage(h.text, n, h.source_title
+                            + (f", p.{h.page}" if h.page else "")
+                            + (f" — {h.section}" if h.section else "")
+                            + _media_label(h))
         for n, h in enumerate(hits, start=start)
     )
     citations = []

@@ -17,7 +17,7 @@ from sqlmodel import select
 
 from core import figures
 from core.db import Chunk, ConceptEdge, ConceptExtraction, session
-from core.llm import llm
+from core.llm import DATA_RULE, llm, passage
 
 log = logging.getLogger("studymind.concepts")
 
@@ -39,8 +39,9 @@ def normalise(name: str) -> str:
 
 
 def _prompt(texts: list[str]) -> str:
-    numbered = "\n\n".join(f"[{i}] {t}" for i, t in enumerate(texts, 1))
+    numbered = "\n\n".join(passage(t, i) for i, t in enumerate(texts, 1))
     return (
+        f"{DATA_RULE}\n\n"
         f"{numbered}\n\n"
         f"For each numbered passage, extract at most {MAX_TRIPLES} (concept, relation, concept) triples. "
         "Concepts are short noun phrases. Reply with JSON only: "

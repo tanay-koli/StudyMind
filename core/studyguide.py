@@ -14,7 +14,7 @@ from sqlmodel import select
 
 from core import chunking
 from core.db import Chunk, Source, session
-from core.llm import llm
+from core.llm import DATA_RULE, llm, passage
 
 log = logging.getLogger("studymind.studyguide")
 
@@ -129,7 +129,7 @@ def units(topic_id: str) -> list[Unit]:
     return out
 
 
-MAP_SYSTEM = "You are a study assistant. Use only the given text."
+MAP_SYSTEM = "You are a study assistant. Use only the given text.\n" + DATA_RULE
 
 
 async def _map(unit: Unit) -> _Map | None:
@@ -137,7 +137,7 @@ async def _map(unit: Unit) -> _Map | None:
         f"Summarise this section of '{unit.source_title}' for a study guide.\n"
         'Reply with JSON: {"key_points": ["..."], "terms": [{"term": "...", "definition": "..."}]}\n'
         "Give 3-6 specific key points and the important terms defined in the text.\n\n"
-        f"{unit.text}"
+        f"{passage(unit.text)}"
     )
     for _ in range(2):
         try:

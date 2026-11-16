@@ -271,9 +271,8 @@ def test_context_labels_media_and_citations_carry_it():
         Hit(4, 1, "Slides", 6, None, "plain", 1.0),
     ]
     text, cites = query._context(hits)
-    headers = [line for line in text.splitlines() if line.startswith("[")]
-    assert headers == ["[1] Slides, p.4 — Figure", "[2] Slides, p.5 — Table",
-                       "[3] YouTube: abc @ 12:34", "[4] Slides, p.6"]
+    headers = [line.split(">", 1)[1] for line in text.splitlines() if line.startswith("[")]
+    assert headers == ["Slides, p.4 — Figure", "Slides, p.5 — Table", "YouTube: abc @ 12:34", "Slides, p.6"]
     assert [(c["kind"], c["image_url"], c["url"]) for c in cites] == [
         ("figure", "/figures/1", None), ("table", None, None), ("video", None, "https://youtu.be/abc?t=754"),
         ("text", None, None),

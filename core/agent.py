@@ -23,7 +23,7 @@ from langgraph.graph import END, START, StateGraph
 from core import memory, query, tutor
 from core.db import ConceptMastery, session
 from core.config import settings
-from core.llm import llm
+from core.llm import DATA_RULE, llm
 from core.retrieval import Hit, get_retriever, relevant
 
 log = logging.getLogger("studymind.agent")
@@ -37,10 +37,10 @@ WARNING = "Some statements may not be supported by your material:"
 EXPLAIN_SYSTEM = (
     query.CITE_RULES
     + "Explain step by step for a student, defining terms before using them.\n"
-    + "If the context does not contain the answer, reply exactly: This isn't in your material."
+    + DATA_RULE + "\nIf the context does not contain the answer, reply exactly: This isn't in your material."
 )
 REWRITE_SYSTEM = "You turn a student's question into one short, specific search query for their study notes."
-CHECK_SYSTEM = "You check an answer against the numbered passages it cites."
+CHECK_SYSTEM = "You check an answer against the numbered passages it cites.\n" + DATA_RULE
 
 
 class StudyState(TypedDict, total=False):

@@ -15,7 +15,7 @@ from sqlmodel import select
 
 from core import concepts, query
 from core.db import ConceptEdge, ConceptMastery, QuizAttempt, session
-from core.llm import llm
+from core.llm import DATA_RULE, llm, passage
 from core.retrieval import Hit, _hydrate, get_retriever, relevant
 
 SESSION_SIZE = 5
@@ -93,8 +93,8 @@ def _topic_targets(topic_id: Optional[str], n: int) -> list[tuple[str, int]]:
 # ---------------------------------------------------------------------------
 
 QUESTION_SYSTEM = ("You write quiz questions for a student from one passage of their study material. "
-                   "Use only the passage.")
-TUTOR_SYSTEM = "You are a patient tutor. Use only the passage you are given."
+                   "Use only the passage.\n" + DATA_RULE)
+TUTOR_SYSTEM = "You are a patient tutor. Use only the passage you are given.\n" + DATA_RULE
 UNGRADED = "Couldn't grade this answer."
 _LETTERS = "ABCD"
 _SHAPES = {
@@ -124,7 +124,7 @@ async def generate_question(concept: str, chunk_id: int, kind: str, facts: str =
     if citation is None:
         return None
     what, shape = _SHAPES[kind]
-    prompt = (f"Passage:\n{citation['text']}\n\nWrite {what} that tests '{concept}'. "
+    prompt = (f"{passage(citation['text'])}\n\nWrite {what} that tests '{concept}'. "
               f"Reply with JSON only: {shape}")
     for _ in range(2):
         try:
@@ -162,17 +162,17 @@ def _mcq_letter(answer: str, options: list[str]) -> Optional[str]:
 
 async def grade(question: Question, answer: str, facts: str = "") -> tuple[Optional[str], str]:
     """(verdict, feedback); verdict None when the answer couldn't be graded. Uses the stored citation text."""
-    passage = question.citation["text"]
+    wrapped = passage(question.citation["text"])
     if question.kind == "mcq":
         if _mcq_letter(answer, question.options) == question.answer:
             return "correct", ""
         right = f"{question.answer}) {question.options[_LETTERS.index(question.answer)]}"
         why = await llm.complete(
-            f"Passage:\n{passage}\n\nQuestion: {question.question}\nThe right answer is {right}.\n"
+            f"{wrapped}\n\nQuestion: {question.question}\nThe right answer is {right}.\n"
             "In at most 2 sentences, explain from the passage why it is right.",
             system=_system(TUTOR_SYSTEM, facts))
         return "wrong", why.strip()
-    prompt = (f"Passage:\n{passage}\n\nQuestion: {question.question}\nExpected answer: {question.answer}\n"
+    prompt = (f"{wrapped}\n\nQuestion: {question.question}\nExpected answer: {question.answer}\n"
               f"Student's answer: {answer}\n\nGrade the student's answer against the passage. "
               'Reply with JSON only: {"verdict": "correct|partial|wrong", "feedback": "one line, from the passage"}')
     for _ in range(2):

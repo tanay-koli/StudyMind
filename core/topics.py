@@ -32,7 +32,7 @@ from sqlmodel import delete, select, update
 from core import config, query, retrieval, studyguide
 from core.config import DATA_DIR
 from core.db import Chunk, ChunkMedia, ConceptEdge, ConceptExtraction, PendingFigure, Source, Topic, session
-from core.llm import llm
+from core.llm import DATA_RULE, llm
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -251,7 +251,7 @@ def delete_all_sources() -> int:
 
 GROUNDED_SYSTEM = (
     "You are a study assistant. Use only the numbered context passages. "
-    "Do not mention or cite passage numbers."
+    "Do not mention or cite passage numbers.\n" + DATA_RULE
 )
 
 
