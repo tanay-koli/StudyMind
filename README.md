@@ -6,10 +6,6 @@
 
 > 🖥️ **Local and free, with NotebookLM features** — no cloud account or API key needed. Organizes your material into Notebooks (Topics), generates Study Guides, synthesizes Audio Overview podcasts, and discovers cross-topic connections.
 
-<!-- ![StudyMind demo](docs/demo.gif) -->
-
-<sub>`docs/demo.gif` is recorded by the author and added to the repo separately; until then this image does not render.</sub>
-
 ---
 
 ## ✨ Features
