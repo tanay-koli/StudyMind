@@ -12,9 +12,11 @@ generates with the local LLM over the numbered passages; never one string for bo
 
 import asyncio
 import hashlib
+import copy
 import re
+from collections import OrderedDict
 from itertools import zip_longest
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from sqlmodel import select
 
@@ -23,6 +25,7 @@ from core.config import settings
 from core.db import Chunk, session
 from core.graph_utils import render_pyvis_graph, SOURCE_COLORS
 from core.llm import llm
+from core import retrieval
 from core.retrieval import Hit, get_retriever, relevant
 
 CITE_RULES = (
@@ -104,6 +107,43 @@ async def _sub_questions(question: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+CACHE_SIZE = 256
+# shortcut: per-process cache, fine for the single uvicorn worker; use a shared store if the API runs several workers.
+_cache: OrderedDict[tuple, dict] = OrderedDict()
+
+
+def clear_cache() -> None:
+    _cache.clear()
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _fingerprint() -> tuple:
+    return tuple(getattr(settings, f) for f in (
+        "llm_model", "embed_model", "retriever", "rerank", "figures", "query_rewrite", "chunker"))
+
+
+async def _cached(fn_name: str, key: tuple, compute: Callable[[], Awaitable[dict]]) -> dict:
+    """Memoise compute() until the material or the settings change; callers get their own copy."""
+    full = (fn_name, *key, _fingerprint(), retrieval.corpus_version())
+    if full in _cache:
+        _cache.move_to_end(full)
+        return copy.deepcopy(_cache[full])
+    result = await compute()
+    # No citations means the empty/no-material message (or an error): retry once material exists
+    if not result.get("error") and result["citations"]:
+        _cache[full] = copy.deepcopy(result)
+        while len(_cache) > CACHE_SIZE:
+            _cache.popitem(last=False)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Q&A
 # ---------------------------------------------------------------------------
 
@@ -140,10 +180,10 @@ async def ask(question: str) -> dict:
     Returns:
         dict with keys: answer, sources, citations, search_type, error
     """
-    return await _answer(
+    return await _cached("ask", (_norm(question),), lambda: _answer(
         question, None,
         "No results found. Try ingesting more material or rephrasing your question.",
-    )
+    ))
 
 
 async def ask_scoped(question: str, topic_id: str) -> dict:
@@ -152,16 +192,24 @@ async def ask_scoped(question: str, topic_id: str) -> dict:
     Returns:
         dict with keys: answer, sources, citations, search_type, topic_id, error
     """
-    result = await _answer(
-        question, topic_id,
-        f"No results found in **{_topic_name(topic_id)}**. "
-        "Try adding more material to this topic or asking a broader question.",
-    )
-    result["topic_id"] = topic_id
-    return result
+    async def compute() -> dict:
+        result = await _answer(
+            question, topic_id,
+            f"No results found in **{_topic_name(topic_id)}**. "
+            "Try adding more material to this topic or asking a broader question.",
+        )
+        result["topic_id"] = topic_id
+        return result
+
+    return await _cached("ask_scoped", (_norm(question), topic_id), compute)
 
 
 async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: list) -> dict:
+    key = (_norm(question), primary_topic_id, tuple(all_topic_ids))
+    return await _cached("cross_topic_ask", key, lambda: _cross_topic_ask(question, primary_topic_id, all_topic_ids))
+
+
+async def _cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: list) -> dict:
     """Answer from the primary topic, plus connections from every other topic.
 
     Splits the question into sub-questions, retrieves each per topic (top 6
@@ -240,6 +288,10 @@ async def cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: l
 # ---------------------------------------------------------------------------
 
 async def summarize_topic(topic: str) -> dict:
+    return await _cached("summarize_topic", (_norm(topic),), lambda: _summarize_topic(topic))
+
+
+async def _summarize_topic(topic: str) -> dict:
     """Summarize what the material says about a free-text topic.
 
     Returns:

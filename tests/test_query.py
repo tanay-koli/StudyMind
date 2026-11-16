@@ -286,3 +286,84 @@ async def test_summarize_unrelated_topic_skips_llm(fake, monkeypatch):
     _, prompts = fake({None: [Hit(1, 1, "Bio", 1, None, "enzymes speed reactions", -9.0)]}, reply="Made up [1]")
     res = await query.summarize_topic("French Revolution")
     assert prompts == [] and "No information found" in res["summary"]
+
+
+@pytest.fixture
+def counted(monkeypatch):
+    calls = []
+
+    async def complete(prompt, system=None, **kw):
+        calls.append(prompt)
+        return "An answer [1]"
+
+    monkeypatch.setattr(llm, "complete", complete)
+    return calls
+
+
+async def _ingest(text="Transformers use attention over tokens.", title="n"):
+    from core import ingest
+    return await ingest.ingest_text(text, title)
+
+
+@pytest.mark.asyncio
+async def test_repeated_question_is_answered_from_cache(counted):
+    await _ingest()
+    a = await query.ask("What is attention?")
+    n = len(counted)
+    b = await query.ask("  what IS   attention? ")
+    assert len(counted) == n and a == b and a["citations"]
+    b["answer"] = "mutated"
+    assert (await query.ask("what is attention?"))["answer"] == a["answer"]
+
+
+@pytest.mark.asyncio
+async def test_cache_cleared_by_ingest(counted):
+    await _ingest()
+    await query.ask("What is attention?")
+    n = len(counted)
+    await _ingest("Attention weights are softmax scores.", "m")
+    await query.ask("What is attention?")
+    assert len(counted) == n + 1
+
+
+@pytest.mark.asyncio
+async def test_cache_cleared_by_delete_and_move(counted):
+    src = (await _ingest())["source_id"]
+    topic = topics.create_topic("Other")["id"]
+    await query.ask("What is attention?")
+    n = len(counted)
+    assert topics.move_source(src, topic)
+    await query.ask("What is attention?")
+    assert len(counted) == n + 1
+    assert topics.delete_source(src)
+    await query.ask("What is attention?")
+    assert len(counted) == n + 1  # nothing left: no-material answer, no LLM call
+
+
+@pytest.mark.asyncio
+async def test_errors_and_no_material_are_not_cached(counted, monkeypatch):
+    assert (await query.ask("What is attention?"))["citations"] == []  # empty corpus
+    await _ingest()
+    assert (await query.ask("What is attention?"))["citations"]  # retried, now cached
+    n = len(counted)
+    await query.ask("What is attention?")
+    assert len(counted) == n
+
+    async def boom(*a, **k):
+        raise RuntimeError("down")
+
+    good = llm.complete
+    monkeypatch.setattr(llm, "complete", boom)
+    assert (await query.ask("Another question?"))["error"]
+    monkeypatch.setattr(llm, "complete", good)
+    assert (await query.ask("Another question?"))["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_cache_key_includes_settings(counted, monkeypatch):
+    await _ingest()
+    await query.ask("What is attention?")
+    n = len(counted)
+    monkeypatch.setattr(query.settings, "rerank", not query.settings.rerank)
+    await query.ask("What is attention?")
+    assert len(counted) == n + 1

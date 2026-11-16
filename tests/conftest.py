@@ -16,7 +16,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core import chunking, config, db, retrieval, topics  # noqa: E402
+from core import chunking, config, db, query, retrieval, topics  # noqa: E402
 from core.llm import llm  # noqa: E402
 
 def _words(text):
@@ -85,6 +85,7 @@ def offline(tmp_path, monkeypatch):
     # Whitespace tokens instead of the bge tokenizer (no download)
     monkeypatch.setattr(chunking, "token_spans", lambda t: [m.span() for m in re.finditer(r"\S+", t)])
 
+    query.clear_cache()  # the cache is module-global
     db.reset_engine()
     retrieval.reset_store()
     config.set_http_client(httpx.AsyncClient(transport=httpx.MockTransport(handler)))

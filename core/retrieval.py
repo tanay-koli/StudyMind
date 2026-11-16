@@ -107,6 +107,18 @@ _client: QdrantClient | None = None
 # Embedded Qdrant has no internal locking, and ingest, delete and ask call it from
 # worker threads; every Qdrant call goes through this lock (embedding stays outside).
 _lock = threading.RLock()
+_version = 0
+
+
+def corpus_version() -> int:
+    """Bumped whenever indexed material changes; the query cache keys on it."""
+    return _version
+
+
+def _bump() -> None:
+    global _version
+    with _lock:
+        _version += 1
 
 
 def store() -> QdrantClient:
@@ -235,6 +247,7 @@ def index_chunks(source_id: int, topic_id: str, blocks: list[Block],
             s.add_all(media)
             s.commit()
     _upsert(rows)
+    _bump()
     return len(rows)
 
 
@@ -274,12 +287,14 @@ def delete_source_points(source_ids: list[int]) -> None:
     with _lock:
         for name in _chunk_collections():
             store().delete(name, points_selector=_source_filter(source_ids))
+        _bump()
 
 
 def move_source_points(source_id: int, topic_id: str) -> None:
     with _lock:
         for name in _chunk_collections():
             store().set_payload(name, payload={"topic_id": topic_id}, points=_source_filter([source_id]))
+        _bump()
 
 
 # ---------------------------------------------------------------------------
