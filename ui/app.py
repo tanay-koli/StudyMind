@@ -61,6 +61,17 @@ def suggest(excerpt: str) -> str:
     return api("POST", "/topics/suggest", json={"excerpt": excerpt})["name"]
 
 
+def _figure(image_url: str, caption: str | None = None) -> None:
+    """Fetch figure bytes server-side: under compose the browser cannot resolve the api host."""
+    try:
+        resp = httpx.get(settings.api_url + image_url, timeout=30)
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        st.caption(f"{caption or 'Figure'} (image unavailable)")
+        return
+    st.image(resp.content, caption=caption)
+
+
 def _clock(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
@@ -84,15 +95,15 @@ def _render_citations(citations: list[dict], answer: str = "") -> None:
             label = f"[{n}] 📄 {c['source_title']}{page}"
         with col, st.popover(label, width="stretch"):
             if c.get("image_url"):
-                st.image(settings.api_url + c["image_url"])
+                _figure(c["image_url"])
             st.markdown(c["text"])
             if c.get("url"):
                 st.link_button(f"Open at {_clock(c['start_s'])}" if c.get("start_s") is not None else "Open",
                                c["url"])
     cited = [(n, c) for n, c in enumerate(citations, start=1) if c.get("image_url") and f"[{n}]" in answer][:2]
     for n, c in cited:
-        st.image(settings.api_url + c["image_url"],
-                 caption=f"[{n}] {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else ""))
+        _figure(c["image_url"],
+                f"[{n}] {c['source_title']}" + (f" · p.{c['page']}" if c.get("page") else ""))
 
 
 # ---------------------------------------------------------------------------

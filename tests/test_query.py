@@ -420,6 +420,24 @@ async def test_ask_stream_stores_for_ask(counted):
 
 
 @pytest.mark.asyncio
+async def test_ask_stream_error_midstream_caches_nothing(counted, monkeypatch):
+    await _ingest()
+    good = llm.stream
+
+    async def broken(prompt, system=None, **kw):
+        yield "partial "
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(llm, "stream", broken)
+    ev = await _events("What is attention?")
+    assert [n for n, _ in ev][-1] == "error" and "down" in ev[-1][1]
+    monkeypatch.setattr(llm, "stream", good)
+    n = len(counted)
+    await query.ask("What is attention?")
+    assert len(counted) == n + 1
+
+
+@pytest.mark.asyncio
 async def test_ask_stream_no_material(counted):
     ev = await _events("What is attention?")
     assert [n for n, _ in ev] == ["done"] and "No results found" in ev[0][1]["answer"] and counted == []

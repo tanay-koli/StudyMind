@@ -73,6 +73,13 @@ def test_open_corpus_isolates_every_data_path(tmp_path, keep_settings, monkeypat
     assert all(root in p for p in paths) and settings.chunker == "structure"
 
 
+def test_open_corpus_ignores_qdrant_url(tmp_path, keep_settings, monkeypatch):
+    monkeypatch.setattr(configs, "CORPUS_ROOT", tmp_path / "eval")
+    monkeypatch.setattr(settings, "qdrant_url", "http://127.0.0.1:1")
+    configs.open_corpus("structure")
+    assert settings.qdrant_url == ""
+
+
 def test_h_label_says_the_agent_replaces_query_rewriting():
     # the agent searches with get_retriever(rewrite=False), so H drops G's multi-query / HyDE
     assert "own query rewrite" in configs.CONFIGS["H"]["change"]

@@ -71,6 +71,7 @@ def offline(tmp_path, monkeypatch):
     monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{(tmp_path / 'test.db').as_posix()}")
     monkeypatch.setattr(config.settings, "langfuse_public_key", "")
     monkeypatch.setattr(config.settings, "qdrant_path", ":memory:")
+    monkeypatch.setattr(config.settings, "qdrant_url", "")  # a .env QDRANT_URL would win over qdrant_path
     monkeypatch.setattr(config.settings, "embed_model", "bge-small")
     monkeypatch.setattr(retrieval, "embed_dense", fake_embed_dense)
     monkeypatch.setattr(retrieval, "embed_sparse", fake_embed_sparse)

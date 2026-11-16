@@ -42,6 +42,7 @@ def open_corpus(corpus: str) -> None:
     root = CORPUS_ROOT / corpus
     root.mkdir(parents=True, exist_ok=True)
     settings.database_url = f"sqlite:///{(root / 'studymind.db').as_posix()}"
+    settings.qdrant_url = ""  # store() prefers the URL; eval must never touch the user's server
     settings.qdrant_path = (root / "qdrant").as_posix()
     settings.agent_db_path = (root / "agent.db").as_posix()
     settings.chunker = corpus
