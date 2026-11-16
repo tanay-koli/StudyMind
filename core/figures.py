@@ -15,14 +15,14 @@ from sqlmodel import delete, select
 from core import config, retrieval
 from core.config import check_llm, settings
 from core.db import PendingFigure, Source, session
-from core.llm import llm
+from core.llm import DATA_RULE, llm, passage
 from core.parse import Block, FigureCrop
 
 log = logging.getLogger("studymind.figures")
 
 MIN_CAPTION = 20
 MAX_ATTEMPTS = 3
-CAPTION_SYSTEM = "You describe figures from study material for a student."
+CAPTION_SYSTEM = "You describe figures from study material for a student.\n" + DATA_RULE
 CAPTION_PROMPT = "Describe this diagram for a student; list its labels and the relationships between them."
 
 
@@ -81,7 +81,7 @@ async def caption_pending() -> int:
             _drop(fid)
             continue
         prompt = CAPTION_PROMPT + (
-            f"\nIt appears under the heading: {row.section_heading}" if row.section_heading else ""
+            f"\nIt appears under the heading: {passage(row.section_heading)}" if row.section_heading else ""
         )
         try:
             caption = " ".join((await llm.complete(prompt, system=CAPTION_SYSTEM, images=[png],

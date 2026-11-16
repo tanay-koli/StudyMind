@@ -32,7 +32,7 @@ from sqlmodel import delete, select, update
 from core import config, query, retrieval, studyguide
 from core.config import DATA_DIR
 from core.db import Chunk, ChunkMedia, ConceptEdge, ConceptExtraction, PendingFigure, Source, Topic, session
-from core.llm import DATA_RULE, llm
+from core.llm import DATA_RULE, llm, passage
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -297,12 +297,12 @@ async def suggest_topic_name(text_excerpt: str, existing_names: list[str]) -> st
         f"Existing topics: {existing_str}.\n"
         f"If the content fits an existing topic, suggest that exact name.\n"
         f"Reply with ONLY the topic name, nothing else.\n\n"
-        f"Text:\n{excerpt}"
+        f"{passage(excerpt)}"
     )
 
     try:
         # Ollama's first call after idle loads the model (~1 min on CPU)
-        result = await llm.complete(prompt, timeout=120)
+        result = await llm.complete(prompt, system=DATA_RULE, timeout=120)
     except Exception:
         return ""
     # Clean: strip quotes, punctuation, extra whitespace, take first line

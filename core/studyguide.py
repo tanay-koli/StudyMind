@@ -160,7 +160,7 @@ async def _reduce(topic_name: str, sections: list[SectionSummary], terms: list[T
         f"Combine these section summaries of '{topic_name}' into a study guide.\n"
         'Reply with JSON: {"overview": "2-3 sentences", "key_concepts": ["5-8 main ideas"], '
         '"review_questions": ["3-5 questions"]}\n\n'
-        f"{body}"
+        f"{passage(body)}"
     )
     try:
         r = _Reduce.model_validate(await llm.complete_json(prompt, system=MAP_SYSTEM, timeout=180))

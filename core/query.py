@@ -269,7 +269,7 @@ async def _cross_topic_ask(question: str, primary_topic_id: str, all_topic_ids: 
             f"**From {primary_name}:** the answer from its passages\n\n"
             f"**Connected from other topics:** related points from the other passages, or 'None found'"
         )
-        answer = await llm.complete(prompt, system=CITE_RULES)
+        answer = await llm.complete(prompt, system=CITE_RULES + DATA_RULE)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
@@ -311,7 +311,7 @@ async def _summarize_topic(topic: str) -> dict:
         result["sources_referenced"] = list(dict.fromkeys(h.source_title for h in hits))
         result["summary"] = await llm.complete(
             f"{context}\n\nSummarize what these passages say about '{topic}'.",
-            system=CITE_RULES,
+            system=CITE_RULES + DATA_RULE,
         )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"

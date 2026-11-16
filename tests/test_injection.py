@@ -49,24 +49,39 @@ async def test_answer_prompt_wraps_material_and_carries_rule(recorded):
 @pytest.mark.asyncio
 async def test_every_material_prompt_carries_the_rule(recorded):
     tid = topics.create_topic("Transformers")["id"]
+    other = topics.create_topic("Biology")["id"]
     await ingest.ingest_text("Self-attention weighs every token", title="L1", topic_id=tid)
-    await query.ask("What is attention?")
-    state = {"documents": await agent.search_material("attention", tid),
-             "question": "q", "unsupported": [], "intent": "explain", "answer": "An answer [1]"}
-    await agent.generate(state)
-    await agent.self_check(state)
-    await topics.generate_study_guide(tid)
+    await ingest.ingest_text("Attention of cells in biology", title="L2", topic_id=other)
     with session() as s:
         cid = s.exec(select(Chunk.id)).first()
+    state = {"documents": await agent.search_material("attention", tid),
+             "question": "q", "unsupported": [], "intent": "explain", "answer": "An answer [1]"}
     q = await tutor.generate_question("attention", cid, "short")
     assert q
-    await tutor.grade(q, "something", "")
-    await concepts.extract_pending()
 
-    seen = [(p, s) for p, s in recorded if "<passage" in p]
-    assert len(seen) >= 6
-    for prompt, system in seen:
-        assert DATA_RULE in (system or "") or prompt.startswith(DATA_RULE), prompt[:120]
+    paths = {
+        "ask": lambda: query.ask("What is attention?"),
+        "ask_scoped": lambda: query.ask_scoped("What is attention?", tid),
+        "cross_topic": lambda: query.cross_topic_ask("attention?", tid, [tid, other]),
+        "summarize": lambda: query.summarize_topic("attention"),
+        "generate": lambda: agent.generate(state),
+        "self_check": lambda: agent.self_check(state),
+        "study_guide": lambda: topics.generate_study_guide(tid),
+        "audio_script": lambda: topics.generate_audio_script(tid),
+        "topic_name": lambda: topics.suggest_topic_name("Attention weighs tokens", []),
+        "question": lambda: tutor.generate_question("attention", cid, "short"),
+        "grade": lambda: tutor.grade(q, "something", ""),
+        "concepts": lambda: concepts.extract_pending(),
+    }
+    for name, run in paths.items():
+        recorded.clear()
+        await run()
+        assert recorded, f"{name} made no LLM call"
+        for prompt, system in recorded:
+            if prompt.startswith("Split this question"):  # query decomposition: the user's question, no material
+                continue
+            assert "<passage" in prompt, name
+            assert DATA_RULE in (system or "") or prompt.startswith(DATA_RULE), name
 
 
 @pytest.mark.asyncio
