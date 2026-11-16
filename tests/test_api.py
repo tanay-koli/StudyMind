@@ -304,3 +304,21 @@ def test_audio_does_not_speak_a_failure_message(client, monkeypatch):
 
     monkeypatch.setattr(topics.llm, "complete", down)
     assert client.post("/topics/general/audio").status_code == 503 and spoken == []
+
+
+def test_agent_route_streams_token_lines(client, monkeypatch):
+    async def search(q, tid):
+        return [{"chunk_id": 1, "source_id": 1, "source_title": "N", "page": 1,
+                 "section": None, "text": "t", "score": 2.0}]
+
+    async def stream(p, system=None, **kw):
+        for d in ("A ", "[1]."):
+            yield d
+
+    monkeypatch.setattr(agent, "search_material", search)
+    monkeypatch.setattr(llm, "stream", stream)
+    ev = _events(client.post("/agent", json={"message": "what is t", "thread_id": "tk"}))
+    toks = [e for e in ev if e["event"] == "token"]
+    assert toks and ev.index(toks[0]) < ev.index(ev[-1]) and ev[-1]["event"] == "done"
+    assert "".join(t["text"] for t in toks) == ev[-1]["answer"] == "A [1]."
+    assert all(t["attempt"] == 1 for t in toks)

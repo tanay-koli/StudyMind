@@ -17,6 +17,7 @@ import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Optional, TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
@@ -190,7 +191,15 @@ async def generate(state: StudyState) -> dict:
     system = EXPLAIN_SYSTEM if state["intent"] == "explain" else query.ANSWER_SYSTEM
     if profile := memory.profile():
         system += "\n" + profile
-    answer = await llm.complete(prompt, system=system)
+    try:
+        write = get_stream_writer()
+    except RuntimeError:  # called outside a graph run (direct unit calls)
+        write = lambda _: None  # noqa: E731
+    attempt = 2 if state["unsupported"] else 1
+    answer = ""
+    async for delta in llm.stream(prompt, system=system):
+        answer += delta
+        write({"token": delta, "attempt": attempt})
     # Called with flagged sentences means this is the one regeneration
     return {"answer": answer, "citations": citations, "regenerated": bool(state["unsupported"])}
 

@@ -321,7 +321,11 @@ async def agent_turn(body: AgentIn):
 
     async def lines():
         try:
-            async for update in graph.astream(turn, cfg, stream_mode="updates"):
+            async for mode, update in graph.astream(turn, cfg, stream_mode=["updates", "custom"]):
+                if mode == "custom":
+                    yield json.dumps({"event": "token", "text": update["token"],
+                                      "attempt": update["attempt"]}) + "\n"
+                    continue
                 for node, out in update.items():
                     event = {"event": "node", "node": node, "label": agent.LABELS.get(node, node)}
                     if node == "retrieve":

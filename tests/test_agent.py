@@ -472,3 +472,35 @@ async def test_failed_next_question_does_not_record_the_answer_twice(quiz, monke
     await run("B")
     with session() as db:
         assert len(db.exec(select_attempts()).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_stream_tokens_carry_attempt(script, monkeypatch, tmp_path):
+    s, log, _ = script
+    s["search"] = [[_doc(2.0)]]
+    s["json"] = [{"unsupported": ["Bad [1]."]}, {"unsupported": []}]
+    gens = iter([["Ba", "d [1]."], ["A ", "B"]])
+
+    async def stream(prompt, system=None, **kw):
+        for d in next(gens):
+            yield d
+
+    monkeypatch.setattr(llm, "stream", stream)
+    async with agent.open_graph(str(tmp_path / "agent.db")) as g:
+        cfg = {"configurable": {"thread_id": "s"}}
+        turn = {"messages": [], "question": "q", "topics": []}
+        custom = [p async for m, p in g.astream(turn, cfg, stream_mode=["updates", "custom"]) if m == "custom"]
+        st = (await g.aget_state(cfg)).values
+    assert [(c["token"], c["attempt"]) for c in custom] == [("Ba", 1), ("d [1].", 1), ("A ", 2), ("B", 2)]
+    assert st["answer"] == "A B"
+
+
+@pytest.mark.asyncio
+async def test_agent_invoke_without_stream_still_answers(script):
+    s, log, _ = script
+    s["search"] = [[_doc(2.0)]]
+    s["complete"] = ["Fine [1]."]
+    async with agent.open_graph(":memory:") as g:
+        out = await g.ainvoke({"messages": [], "question": "q", "topics": []},
+                              {"configurable": {"thread_id": "i"}})
+    assert out["answer"] == "Fine [1]."
